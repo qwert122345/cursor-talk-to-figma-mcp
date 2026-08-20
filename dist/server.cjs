@@ -854,7 +854,7 @@ server.tool(
 );
 server.tool(
   "get_variable_bindings",
-  "Find nodes using hardcoded values (fills, strokes, cornerRadius, itemSpacing, padding, fontSize) instead of variables. Returns per-property and per-component/variant rollups plus the node list. Scope with nodeId or pageName; skip pages with excludePages.",
+  "Find nodes using hardcoded values (fills, strokes, cornerRadius, itemSpacing, padding, fontSize) instead of variables. Returns the actual value per finding plus a byValue histogram (e.g. how many places paint #F5F5F5), alongside per-property and per-component/variant rollups and the node list. Colors are hex with opacity folded into alpha. Scope with nodeId or pageName; skip pages with excludePages.",
   {
     nodeId: import_zod.z.string().optional().describe("Limit the scan to this node and its children"),
     pageName: import_zod.z.string().optional().describe("Limit the scan to a single page by name"),
@@ -1014,16 +1014,18 @@ server.tool(
 );
 server.tool(
   "get_instance_census",
-  "Count instances per main component across the current file, split into library (design system) and local components. Run it on a product file to measure design system usage.",
+  "Count instances per main component across the current file, split into library (design system) and local components. Run it on a product file to measure design system usage. Pass instancesFor (component key/id/name) to also get where those instances are - id, page and ancestor path - which is the only way to locate instances whose layer name is the slot name rather than the component name.",
   {
     pageName: import_zod.z.string().optional().describe("Limit the census to a single page by name"),
-    excludePages: import_zod.z.array(import_zod.z.string()).optional().describe("Page names to skip")
+    excludePages: import_zod.z.array(import_zod.z.string()).optional().describe("Page names to skip"),
+    instancesFor: import_zod.z.string().optional().describe("Component key, id, name or set name: also list where those instances actually are (id, page, ancestor path)"),
+    instanceLimit: import_zod.z.number().optional().describe("Max instances to list for instancesFor (default 1000)")
   },
-  async ({ pageName, excludePages }) => {
+  async ({ pageName, excludePages, instancesFor, instanceLimit }) => {
     try {
       const result = await sendCommandToFigma(
         "get_instance_census",
-        { pageName, excludePages },
+        { pageName, excludePages, instancesFor, instanceLimit },
         12e4
       );
       return {

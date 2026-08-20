@@ -4419,6 +4419,21 @@ async function setSelections(params) {
 // DS healthcheck commands: variables, hardcoded values, instance census
 // ============================================================
 
+// Readable trail from the page down to the node, so a census hit can actually
+// be found by a human. Instance children are named after the slot they sit in
+// ("Leading Icon"), so the path is the only thing that says which screen.
+function ancestorPath(node, maxDepth) {
+  var parts = [];
+  var p = node.parent;
+  var depth = 0;
+  while (p && p.type !== "PAGE" && p.type !== "DOCUMENT" && depth < (maxDepth || 8)) {
+    parts.unshift(p.name);
+    p = p.parent;
+    depth++;
+  }
+  return parts.join(" > ");
+}
+
 function pageNameOf(node) {
   var p = node;
   while (p && p.type !== "PAGE") p = p.parent;
@@ -4542,6 +4557,25 @@ function isBound(bound, keys) {
   });
 }
 
+// Paints render as hex so the caller can count "#F5F5F5 appears 23 times".
+// Opacity folds into the alpha byte, otherwise two visually different greys
+// collapse into one bucket.
+function paintsToValue(paints) {
+  return paints
+    .map(function (p) {
+      return rgbaToHex({
+        r: p.color.r,
+        g: p.color.g,
+        b: p.color.b,
+        a: p.opacity === undefined ? 1 : p.opacity,
+      });
+    })
+    .join(",");
+}
+
+// Returns [{ prop, value }] — the value is what the node actually paints/spaces
+// with, which is the whole point: "fills is hardcoded" is not actionable,
+// "#F5F5F5 is hardcoded in 23 places" is.
 function hardcodedProps(node) {
   var bound = node.boundVariables || {};
   var out = [];
@@ -4553,6 +4587,7 @@ function hardcodedProps(node) {
     // ponytail: a 0 radius/spacing/padding is almost never a missing token,
     // and flagging it buries the real findings. Drop the guard if 0 matters.
     if (value === 0) continue;
+    var reported = value;
     if (check.paints) {
       if (!Array.isArray(value)) continue;
       // Only solid paints are token candidates — image fills aren't.
@@ -4560,12 +4595,13 @@ function hardcodedProps(node) {
         return p.type === "SOLID" && p.visible !== false;
       });
       if (!solid.length) continue;
+      reported = paintsToValue(solid);
     }
     if (check.styleId && node[check.styleId]) continue;
     // ponytail: any binding on the property counts as bound. A node with 2 fills
     // where only one is tokenised reads as clean; split per-paint if that bites.
     if (isBound(bound, check.keys)) continue;
-    out.push(check.prop);
+    out.push({ prop: check.prop, value: reported });
   }
   return out;
 }
@@ -4606,6 +4642,7 @@ async function getVariableBindings(params) {
 
   var findings = [];
   var byProperty = {};
+  var byValue = {};
   var byComponent = {};
   var scannedNodes = 0;
 
@@ -4624,8 +4661,17 @@ async function getVariableBindings(params) {
       scannedNodes++;
       var props = hardcodedProps(nodes[j]);
       if (!props.length) continue;
+      var propNames = [];
+      var values = {};
       props.forEach(function (p) {
-        byProperty[p] = (byProperty[p] || 0) + 1;
+        byProperty[p.prop] = (byProperty[p.prop] || 0) + 1;
+        propNames.push(p.prop);
+        values[p.prop] = p.value;
+        // The rollup is the reason this command exists: without it the caller
+        // has to page through every finding just to build a histogram.
+        var vb = byValue[p.prop] || (byValue[p.prop] = {});
+        var vk = String(p.value);
+        vb[vk] = (vb[vk] || 0) + 1;
       });
       var owner = nearestComponent(nodes[j]);
       var ownerKey = owner.component || "(no component)";
@@ -4639,7 +4685,8 @@ async function getVariableBindings(params) {
         page: target.pageName,
         component: owner.component,
         variant: owner.variant,
-        hardcoded: props,
+        hardcoded: propNames,
+        values: values,
       });
     }
 
@@ -4660,6 +4707,7 @@ async function getVariableBindings(params) {
     scannedNodes: scannedNodes,
     totalFindings: findings.length,
     byProperty: byProperty,
+    byValue: byValue,
     byComponent: byComponent,
     offset: offset,
     limit: limit,
@@ -5169,6 +5217,12 @@ async function getInstanceCensus(params) {
 
   var census = {};
   var unresolved = 0;
+  // instancesFor: name/key/id of one component. Without it the census is a pure
+  // rollup and says nothing about where the instances actually are.
+  var wanted = params.instancesFor || null;
+  var instanceLimit = params.instanceLimit || 1000;
+  var matches = [];
+  var matchTotal = 0;
 
   for (var i = 0; i < instances.length; i++) {
     var instance = instances[i];
@@ -5195,6 +5249,18 @@ async function getInstanceCensus(params) {
         };
       }
       census[main.id].count++;
+      if (wanted && (main.key === wanted || main.id === wanted ||
+          main.name === wanted || (set && set.name === wanted))) {
+        if (matches.length < instanceLimit) {
+          matches.push({
+            id: instance.id,
+            name: instance.name,
+            page: pageNameOf(instance),
+            path: ancestorPath(instance),
+          });
+        }
+        matchTotal++;
+      }
     }
 
     if ((i + 1) % 100 === 0 || i + 1 === instances.length) {
@@ -5230,5 +5296,8 @@ async function getInstanceCensus(params) {
     libraryInstances: libraryInstances,
     localInstances: instances.length - unresolved - libraryInstances,
     components: components,
+    instancesFor: wanted,
+    matchedInstances: wanted ? matchTotal : undefined,
+    instances: wanted ? matches : undefined,
   };
 }
