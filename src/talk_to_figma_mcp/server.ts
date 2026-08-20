@@ -966,11 +966,13 @@ server.tool(
 // Get Local Components Tool
 server.tool(
   "get_local_components",
-  "Get all local components from the Figma document",
-  {},
-  async () => {
+  "Get all local components and component sets, with name, type, key, description, documentationLinks, page, parent and variant properties. Pass checkPublished to also report whether each top-level component is actually published to a team library (one network round trip per component, so it is slow).",
+  {
+    checkPublished: z.boolean().optional().describe("Also resolve publish state per top-level component (slow)"),
+  },
+  async ({ checkPublished }: any) => {
     try {
-      const result = await sendCommandToFigma("get_local_components");
+      const result = await sendCommandToFigma("get_local_components", { checkPublished }, 600000);
       return {
         content: [
           {
@@ -985,6 +987,245 @@ server.tool(
           {
             type: "text",
             text: `Error getting local components: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// DS healthcheck: Local Variables Tool
+server.tool(
+  "get_local_variables",
+  "Get all local variable collections and variables (modes, scopes, per-mode values, resolved aliases, HEX for colors). Works on Figma Pro, where the REST variables API does not.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_local_variables", {}, 60000);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting local variables: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// DS healthcheck: Hardcoded Value Tool
+server.tool(
+  "get_variable_bindings",
+  "Find nodes using hardcoded values (fills, strokes, cornerRadius, itemSpacing, padding, fontSize) instead of variables. Returns per-property and per-component/variant rollups plus the node list. Scope with nodeId or pageName; skip pages with excludePages.",
+  {
+    nodeId: z.string().optional().describe("Limit the scan to this node and its children"),
+    pageName: z.string().optional().describe("Limit the scan to a single page by name"),
+    excludePages: z.array(z.string()).optional().describe("Page names to skip (e.g. the checklist page)"),
+    detail: z.boolean().optional().describe("Return the node list, not just the counts (default true)"),
+    limit: z.number().optional().describe("Max findings to return (default 500)"),
+    offset: z.number().optional().describe("Findings to skip, for paging through large results"),
+  },
+  async ({ nodeId, pageName, excludePages, detail, limit, offset }: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_variable_bindings",
+        { nodeId, pageName, excludePages, detail, limit, offset },
+        120000
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting variable bindings: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// DS healthcheck: Unbind shared styles (destructive)
+server.tool(
+  "unbind_styles",
+  "Clear shared-style bindings (fill/stroke/effect/grid/text) under a node while keeping the painted values, which cuts a dependency on an external library without changing appearance. IRREVERSIBLE - run with dryRun first. By default only external-library styles are unbound.",
+  {
+    nodeId: z.string().describe("Node whose descendants should have style bindings cleared"),
+    dryRun: z.boolean().optional().describe("Report what would be unbound without changing anything"),
+    onlyRemote: z.boolean().optional().describe("Only unbind external-library styles (default true)"),
+  },
+  async ({ nodeId, dryRun, onlyRemote }: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "unbind_styles",
+        { nodeId, dryRun, onlyRemote },
+        300000
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error unbinding styles: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// DS healthcheck: Detach instances (destructive)
+server.tool(
+  "detach_instances",
+  "Detach component instances under a node, in passes so nested instances are reached too. IRREVERSIBLE - always run with dryRun first to review the list. By default only instances of remote (external library) components are detached; set onlyRemote false to detach local ones too.",
+  {
+    nodeId: z.string().describe("Node whose descendant instances should be detached"),
+    dryRun: z.boolean().optional().describe("Report what would be detached without changing anything"),
+    onlyRemote: z.boolean().optional().describe("Only detach instances of external-library components (default true)"),
+    maxPasses: z.number().optional().describe("Max nesting passes (default 12)"),
+  },
+  async ({ nodeId, dryRun, onlyRemote, maxPasses }: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "detach_instances",
+        { nodeId, dryRun, onlyRemote, maxPasses },
+        300000
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error detaching instances: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// DS healthcheck: Hyperlink reader
+server.tool(
+  "get_hyperlinks",
+  "List text hyperlinks (URL or NODE targets) with the linked text, reading live nodes. For NODE links it also reports whether the destination still exists and which page it is on, so broken index links can be found. Scope with nodeId or pageName.",
+  {
+    nodeId: z.string().optional().describe("Limit the scan to this node and its children"),
+    pageName: z.string().optional().describe("Limit the scan to a single page by name"),
+    excludePages: z.array(z.string()).optional().describe("Page names to skip"),
+  },
+  async ({ nodeId, pageName, excludePages }: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_hyperlinks",
+        { nodeId, pageName, excludePages },
+        120000
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting hyperlinks: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// DS healthcheck: Layout / sizing / effect / shared-style audit
+server.tool(
+  "get_layout_audit",
+  "Per-component rollup of auto layout usage, HUG/FILL/FIXED sizing, actual padding and itemSpacing values, drop shadows (effects), and shared text/fill style bindings. Reads live plugin nodes, so it returns fields the JSON_REST_V1 export omits. Scope with nodeId or pageName; skip pages with excludePages.",
+  {
+    nodeId: z.string().optional().describe("Limit the audit to this node and its children"),
+    pageName: z.string().optional().describe("Limit the audit to a single page by name"),
+    excludePages: z.array(z.string()).optional().describe("Page names to skip (e.g. the checklist page)"),
+  },
+  async ({ nodeId, pageName, excludePages }: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_layout_audit",
+        { nodeId, pageName, excludePages },
+        120000
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting layout audit: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// DS healthcheck: Instance Census Tool
+server.tool(
+  "get_instance_census",
+  "Count instances per main component across the current file, split into library (design system) and local components. Run it on a product file to measure design system usage.",
+  {
+    pageName: z.string().optional().describe("Limit the census to a single page by name"),
+    excludePages: z.array(z.string()).optional().describe("Page names to skip"),
+  },
+  async ({ pageName, excludePages }: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_instance_census",
+        { pageName, excludePages },
+        120000
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting instance census: ${error instanceof Error ? error.message : String(error)
               }`,
           },
         ],
@@ -2630,6 +2871,13 @@ type FigmaCommand =
   | "delete_multiple_nodes"
   | "get_styles"
   | "get_local_components"
+  | "get_local_variables"
+  | "get_variable_bindings"
+  | "get_instance_census"
+  | "get_layout_audit"
+  | "get_hyperlinks"
+  | "detach_instances"
+  | "unbind_styles"
   | "create_component_instance"
   | "get_instance_overrides"
   | "set_instance_overrides"
@@ -2725,7 +2973,7 @@ type CommandParams = {
     nodeIds: string[];
   };
   get_styles: Record<string, never>;
-  get_local_components: Record<string, never>;
+  get_local_components: { checkPublished?: boolean };
   get_team_components: Record<string, never>;
   create_component_instance: {
     componentKey: string;
@@ -2828,6 +3076,40 @@ type CommandParams = {
     x?: number;
     y?: number;
     index?: number;
+  };
+  get_local_variables: Record<string, never>;
+  get_variable_bindings: {
+    nodeId?: string;
+    pageName?: string;
+    excludePages?: string[];
+    detail?: boolean;
+    limit?: number;
+    offset?: number;
+  };
+  get_instance_census: {
+    pageName?: string;
+    excludePages?: string[];
+  };
+  get_layout_audit: {
+    nodeId?: string;
+    pageName?: string;
+    excludePages?: string[];
+  };
+  get_hyperlinks: {
+    nodeId?: string;
+    pageName?: string;
+    excludePages?: string[];
+  };
+  detach_instances: {
+    nodeId: string;
+    dryRun?: boolean;
+    onlyRemote?: boolean;
+    maxPasses?: number;
+  };
+  unbind_styles: {
+    nodeId: string;
+    dryRun?: boolean;
+    onlyRemote?: boolean;
   };
 
 };

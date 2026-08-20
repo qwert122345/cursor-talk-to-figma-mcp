@@ -28,6 +28,7 @@ var import_stdio = require("@modelcontextprotocol/sdk/server/stdio.js");
 var import_zod = require("zod");
 var import_ws = __toESM(require("ws"), 1);
 var import_uuid = require("uuid");
+var import_promises = require("fs/promises");
 var logger = {
   info: (message) => process.stderr.write(`[INFO] ${message}
 `),
@@ -797,11 +798,13 @@ server.tool(
 );
 server.tool(
   "get_local_components",
-  "Get all local components from the Figma document",
-  {},
-  async () => {
+  "Get all local components and component sets, with name, type, key, description, documentationLinks, page, parent and variant properties. Pass checkPublished to also report whether each top-level component is actually published to a team library (one network round trip per component, so it is slow).",
+  {
+    checkPublished: import_zod.z.boolean().optional().describe("Also resolve publish state per top-level component (slow)")
+  },
+  async ({ checkPublished }) => {
     try {
-      const result = await sendCommandToFigma("get_local_components");
+      const result = await sendCommandToFigma("get_local_components", { checkPublished }, 6e5);
       return {
         content: [
           {
@@ -816,6 +819,227 @@ server.tool(
           {
             type: "text",
             text: `Error getting local components: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "get_local_variables",
+  "Get all local variable collections and variables (modes, scopes, per-mode values, resolved aliases, HEX for colors). Works on Figma Pro, where the REST variables API does not.",
+  {},
+  async () => {
+    try {
+      const result = await sendCommandToFigma("get_local_variables", {}, 6e4);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting local variables: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "get_variable_bindings",
+  "Find nodes using hardcoded values (fills, strokes, cornerRadius, itemSpacing, padding, fontSize) instead of variables. Returns per-property and per-component/variant rollups plus the node list. Scope with nodeId or pageName; skip pages with excludePages.",
+  {
+    nodeId: import_zod.z.string().optional().describe("Limit the scan to this node and its children"),
+    pageName: import_zod.z.string().optional().describe("Limit the scan to a single page by name"),
+    excludePages: import_zod.z.array(import_zod.z.string()).optional().describe("Page names to skip (e.g. the checklist page)"),
+    detail: import_zod.z.boolean().optional().describe("Return the node list, not just the counts (default true)"),
+    limit: import_zod.z.number().optional().describe("Max findings to return (default 500)"),
+    offset: import_zod.z.number().optional().describe("Findings to skip, for paging through large results")
+  },
+  async ({ nodeId, pageName, excludePages, detail, limit, offset }) => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_variable_bindings",
+        { nodeId, pageName, excludePages, detail, limit, offset },
+        12e4
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting variable bindings: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "unbind_styles",
+  "Clear shared-style bindings (fill/stroke/effect/grid/text) under a node while keeping the painted values, which cuts a dependency on an external library without changing appearance. IRREVERSIBLE - run with dryRun first. By default only external-library styles are unbound.",
+  {
+    nodeId: import_zod.z.string().describe("Node whose descendants should have style bindings cleared"),
+    dryRun: import_zod.z.boolean().optional().describe("Report what would be unbound without changing anything"),
+    onlyRemote: import_zod.z.boolean().optional().describe("Only unbind external-library styles (default true)")
+  },
+  async ({ nodeId, dryRun, onlyRemote }) => {
+    try {
+      const result = await sendCommandToFigma(
+        "unbind_styles",
+        { nodeId, dryRun, onlyRemote },
+        3e5
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error unbinding styles: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "detach_instances",
+  "Detach component instances under a node, in passes so nested instances are reached too. IRREVERSIBLE - always run with dryRun first to review the list. By default only instances of remote (external library) components are detached; set onlyRemote false to detach local ones too.",
+  {
+    nodeId: import_zod.z.string().describe("Node whose descendant instances should be detached"),
+    dryRun: import_zod.z.boolean().optional().describe("Report what would be detached without changing anything"),
+    onlyRemote: import_zod.z.boolean().optional().describe("Only detach instances of external-library components (default true)"),
+    maxPasses: import_zod.z.number().optional().describe("Max nesting passes (default 12)")
+  },
+  async ({ nodeId, dryRun, onlyRemote, maxPasses }) => {
+    try {
+      const result = await sendCommandToFigma(
+        "detach_instances",
+        { nodeId, dryRun, onlyRemote, maxPasses },
+        3e5
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error detaching instances: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "get_hyperlinks",
+  "List text hyperlinks (URL or NODE targets) with the linked text, reading live nodes. For NODE links it also reports whether the destination still exists and which page it is on, so broken index links can be found. Scope with nodeId or pageName.",
+  {
+    nodeId: import_zod.z.string().optional().describe("Limit the scan to this node and its children"),
+    pageName: import_zod.z.string().optional().describe("Limit the scan to a single page by name"),
+    excludePages: import_zod.z.array(import_zod.z.string()).optional().describe("Page names to skip")
+  },
+  async ({ nodeId, pageName, excludePages }) => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_hyperlinks",
+        { nodeId, pageName, excludePages },
+        12e4
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting hyperlinks: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "get_layout_audit",
+  "Per-component rollup of auto layout usage, HUG/FILL/FIXED sizing, actual padding and itemSpacing values, drop shadows (effects), and shared text/fill style bindings. Reads live plugin nodes, so it returns fields the JSON_REST_V1 export omits. Scope with nodeId or pageName; skip pages with excludePages.",
+  {
+    nodeId: import_zod.z.string().optional().describe("Limit the audit to this node and its children"),
+    pageName: import_zod.z.string().optional().describe("Limit the audit to a single page by name"),
+    excludePages: import_zod.z.array(import_zod.z.string()).optional().describe("Page names to skip (e.g. the checklist page)")
+  },
+  async ({ nodeId, pageName, excludePages }) => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_layout_audit",
+        { nodeId, pageName, excludePages },
+        12e4
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting layout audit: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "get_instance_census",
+  "Count instances per main component across the current file, split into library (design system) and local components. Run it on a product file to measure design system usage.",
+  {
+    pageName: import_zod.z.string().optional().describe("Limit the census to a single page by name"),
+    excludePages: import_zod.z.array(import_zod.z.string()).optional().describe("Page names to skip")
+  },
+  async ({ pageName, excludePages }) => {
+    try {
+      const result = await sendCommandToFigma(
+        "get_instance_census",
+        { pageName, excludePages },
+        12e4
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting instance census: ${error instanceof Error ? error.message : String(error)}`
           }
         ]
       };
@@ -2357,6 +2581,185 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
     ws.send(JSON.stringify(request));
   });
 }
+server.tool(
+  "set_image_fill",
+  "Fill a node in Figma with an image from a local file path, a URL, or base64 data (replaces the node's existing fills)",
+  {
+    nodeId: import_zod.z.string().describe("The ID of the node to fill"),
+    imagePath: import_zod.z.string().optional().describe(
+      "Absolute path to a local image file, read by the MCP server (preferred: keeps image bytes out of the model context)"
+    ),
+    imageUrl: import_zod.z.string().optional().describe(
+      "Image URL, fetched by the MCP server (the Figma plugin cannot fetch arbitrary domains itself)"
+    ),
+    imageBase64: import_zod.z.string().optional().describe(
+      "Base64-encoded image data, with or without a data: URI prefix (only when the image exists nowhere else)"
+    ),
+    scaleMode: import_zod.z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("How the image fills the node (default: FILL)")
+  },
+  async ({ nodeId, imagePath, imageUrl, imageBase64, scaleMode }) => {
+    try {
+      const sources = [imagePath, imageUrl, imageBase64].filter(
+        (source) => source !== void 0 && source !== ""
+      );
+      if (sources.length !== 1) {
+        throw new Error("Provide exactly one of imagePath, imageUrl or imageBase64");
+      }
+      let base64Data;
+      if (imagePath) {
+        base64Data = (await (0, import_promises.readFile)(imagePath)).toString("base64");
+      } else if (imageUrl) {
+        const response = await fetch(imageUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image URL (HTTP ${response.status})`);
+        }
+        base64Data = Buffer.from(await response.arrayBuffer()).toString("base64");
+      } else {
+        base64Data = imageBase64.replace(/^data:[^;,]+;base64,/, "");
+      }
+      if (base64Data.length > 12 * 1024 * 1024) {
+        throw new Error(
+          "Image is too large to send over the relay (~9MB binary max); downscale it first"
+        );
+      }
+      const result = await sendCommandToFigma("set_image_fill", {
+        nodeId,
+        imageBase64: base64Data,
+        scaleMode: scaleMode || "FILL"
+      });
+      const typedResult = result;
+      const sizeInfo = typedResult.imageWidth ? ` (${typedResult.imageWidth}x${typedResult.imageHeight})` : "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Set image fill of node "${typedResult.name}"${sizeInfo} with scale mode ${scaleMode || "FILL"}, imageHash: ${typedResult.imageHash}`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting image fill: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "rename_node",
+  "Rename a node in Figma",
+  {
+    nodeId: import_zod.z.string().describe("The ID of the node to rename"),
+    name: import_zod.z.string().describe("The new name for the node")
+  },
+  async ({ nodeId, name }) => {
+    try {
+      const result = await sendCommandToFigma("rename_node", { nodeId, name });
+      const typedResult = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Renamed node from "${typedResult.previousName}" to "${typedResult.name}"`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming node: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "create_section",
+  "Create a section in Figma to group related content on the canvas",
+  {
+    x: import_zod.z.number().describe("X position"),
+    y: import_zod.z.number().describe("Y position"),
+    width: import_zod.z.number().describe("Width of the section"),
+    height: import_zod.z.number().describe("Height of the section"),
+    name: import_zod.z.string().optional().describe("Optional name for the section")
+  },
+  async ({ x, y, width, height, name }) => {
+    try {
+      const result = await sendCommandToFigma("create_section", {
+        x,
+        y,
+        width,
+        height,
+        name: name || "Section"
+      });
+      const typedResult = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created section "${typedResult.name}" with ID: ${typedResult.id}`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating section: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "set_parent",
+  "Move a node into a new parent node (e.g. a section, frame or group). Preserves the node's absolute position unless x/y are provided",
+  {
+    nodeId: import_zod.z.string().describe("The ID of the node to move"),
+    parentId: import_zod.z.string().describe("The ID of the new parent node (must support children, e.g. a section, frame or group)"),
+    x: import_zod.z.number().optional().describe("Optional X position relative to the new parent"),
+    y: import_zod.z.number().optional().describe("Optional Y position relative to the new parent"),
+    index: import_zod.z.number().optional().describe("Optional child index to insert at (default: appended as last child)")
+  },
+  async ({ nodeId, parentId, x, y, index }) => {
+    try {
+      const result = await sendCommandToFigma("set_parent", {
+        nodeId,
+        parentId,
+        x,
+        y,
+        index
+      });
+      const typedResult = result;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Moved node "${typedResult.name}" into "${typedResult.parentName}" at (${typedResult.x}, ${typedResult.y})`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting parent: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
 server.tool(
   "join_channel",
   "Join a specific channel to communicate with Figma",

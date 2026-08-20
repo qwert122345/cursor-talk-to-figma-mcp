@@ -57,24 +57,6 @@ async function sendProgressUpdate(
 // Show UI
 figma.showUI(__html__, { width: 350, height: 600 });
 
-// Initialize anonymous analytics client_id (persisted via clientStorage)
-(async () => {
-  try {
-    let clientId = await figma.clientStorage.getAsync("analyticsClientId");
-    if (!clientId) {
-      clientId =
-        Date.now().toString(36) +
-        "-" +
-        Math.random().toString(36).slice(2, 10) +
-        Math.random().toString(36).slice(2, 10);
-      await figma.clientStorage.setAsync("analyticsClientId", clientId);
-    }
-    figma.ui.postMessage({ type: "analytics-client-id", clientId });
-  } catch (e) {
-    console.error("analytics init failed:", e);
-  }
-})();
-
 // Plugin commands from UI
 figma.ui.onmessage = async (msg) => {
   switch (msg.type) {
@@ -164,6 +146,20 @@ async function handleCommand(command, params) {
       return await getStyles();
     case "get_local_components":
       return await getLocalComponents(params);
+    case "get_local_variables":
+      return await getLocalVariables();
+    case "get_variable_bindings":
+      return await getVariableBindings(params);
+    case "get_instance_census":
+      return await getInstanceCensus(params);
+    case "get_layout_audit":
+      return await getLayoutAudit(params);
+    case "get_hyperlinks":
+      return await getHyperlinks(params);
+    case "detach_instances":
+      return await detachInstances(params);
+    case "unbind_styles":
+      return await unbindStyles(params);
     // case "get_team_components":
     //   return await getTeamComponents();
     case "create_component_instance":
@@ -387,6 +383,10 @@ function filterFigmaNode(node) {
   if (node.cornerRadius !== undefined) {
     filtered.cornerRadius = node.cornerRadius;
   }
+
+  // Note: layoutMode / padding / itemSpacing / effects / styles are NOT in the
+  // JSON_REST_V1 export this function receives. Use get_layout_audit, which
+  // reads them off live plugin nodes.
 
   if (node.absoluteBoundingBox) {
     filtered.absoluteBoundingBox = node.absoluteBoundingBox;
@@ -1394,14 +1394,29 @@ async function getLocalComponents(params) {
     var page = pages[i];
     await page.loadAsync();
 
-    var pageComponents = page.findAllWithCriteria({ types: ["COMPONENT"] });
+    var pageComponents = page.findAllWithCriteria({
+      types: ["COMPONENT", "COMPONENT_SET"],
+    });
 
     for (var j = 0; j < pageComponents.length; j++) {
       var component = pageComponents[j];
+      var parent = component.parent;
+      // A variant's description lives on its parent set, so report both the
+      // set and its variants and let the caller roll up by parentId.
       allComponents.push({
         id: component.id,
         name: component.name,
+        type: component.type,
         key: "key" in component ? component.key : null,
+        description: component.description || "",
+        documentationLinks: component.documentationLinks || [],
+        pageName: page.name,
+        parentId: parent ? parent.id : null,
+        parentName: parent ? parent.name : null,
+        variantProperties:
+          component.type === "COMPONENT_SET"
+            ? component.variantGroupProperties || null
+            : component.variantProperties || null,
       });
     }
 
@@ -1416,6 +1431,62 @@ async function getLocalComponents(params) {
       "Scanned " + page.name + ": " + pageComponents.length + " components (total so far: " + allComponents.length + ")",
       null
     );
+  }
+
+  // Publish state: importing by key only resolves for components that are
+  // actually published to a team library. Opt-in because it is one network
+  // round trip per component.
+  if (params && params.checkPublished) {
+    var tops = allComponents.filter(function (c) {
+      if (!c.key) return false;
+      if (c.type === "COMPONENT_SET") return true;
+      return !allComponents.some(function (o) {
+        return o.type === "COMPONENT_SET" && o.id === c.parentId;
+      });
+    });
+    // One import per component is a network round trip, so run them in
+    // batches instead of serially or the whole command times out.
+    var BATCH = 12;
+    for (var k = 0; k < tops.length; k += BATCH) {
+      var batch = tops.slice(k, k + BATCH);
+      await Promise.all(
+        batch.map(function (c) {
+          var imp =
+            c.type === "COMPONENT_SET"
+              ? figma.importComponentSetByKeyAsync(c.key)
+              : figma.importComponentByKeyAsync(c.key);
+          // An unpublished key does not reject promptly, so cap each lookup.
+          var p = Promise.race([
+            imp,
+            new Promise(function (_, reject) {
+              setTimeout(function () {
+                reject(new Error("import timed out"));
+              }, 4000);
+            }),
+          ]);
+          return p.then(
+            function () {
+              c.published = true;
+            },
+            function (e) {
+              c.published = false;
+              c.publishError = String(e && e.message ? e.message : e);
+            }
+          );
+        })
+      );
+      var doneN = Math.min(k + BATCH, tops.length);
+      await sendProgressUpdate(
+        commandId,
+        "get_local_components",
+        "in_progress",
+        Math.round((doneN / tops.length) * 100),
+        tops.length,
+        doneN,
+        "Checked publish state for " + doneN + "/" + tops.length,
+        null
+      );
+    }
   }
 
   await sendProgressUpdate(
@@ -4341,5 +4412,823 @@ async function setSelections(params) {
     selectedNodes: selectedNodes,
     notFoundIds: notFoundIds,
     message: `Selected ${nodes.length} nodes${notFoundIds.length > 0 ? ` (${notFoundIds.length} not found)` : ''}`
+  };
+}
+
+// ============================================================
+// DS healthcheck commands: variables, hardcoded values, instance census
+// ============================================================
+
+function pageNameOf(node) {
+  var p = node;
+  while (p && p.type !== "PAGE") p = p.parent;
+  return p ? p.name : null;
+}
+
+// Nearest component-ish ancestor, reported as { component, variant }.
+// A variant gives both ("Button" + "Size=Large, State=Pressed") so a problem
+// isolated to one variant stays visible instead of collapsing into the set.
+function nearestComponent(node) {
+  var p = node.parent;
+  while (p && p.type !== "PAGE" && p.type !== "DOCUMENT") {
+    if (p.type === "COMPONENT_SET") return { component: p.name, variant: null };
+    if (p.type === "COMPONENT") {
+      return p.parent && p.parent.type === "COMPONENT_SET"
+        ? { component: p.parent.name, variant: p.name }
+        : { component: p.name, variant: null };
+    }
+    if (p.type === "INSTANCE") return { component: p.name, variant: null };
+    p = p.parent;
+  }
+  return { component: null, variant: null };
+}
+
+// Turn one mode's raw value into something readable.
+// COLOR carries both 0-1 RGBA and HEX so contrast math needs no second call.
+async function resolveVariableValue(value, resolvedType, nameById) {
+  if (value && value.type === "VARIABLE_ALIAS") {
+    var name = nameById[value.id];
+    if (name === undefined) {
+      // Aliases can point at library variables, which aren't in the local map.
+      var target = await figma.variables.getVariableByIdAsync(value.id);
+      name = target ? target.name : null;
+      nameById[value.id] = name;
+    }
+    return { alias: true, variableId: value.id, name: name };
+  }
+  if (resolvedType === "COLOR" && value && typeof value === "object") {
+    return { rgba: value, hex: rgbaToHex(value) };
+  }
+  return value;
+}
+
+async function getLocalVariables() {
+  var collections = await figma.variables.getLocalVariableCollectionsAsync();
+  var variables = await figma.variables.getLocalVariablesAsync();
+
+  var nameById = {};
+  var byCollection = {};
+  variables.forEach(function (v) {
+    nameById[v.id] = v.name;
+    (byCollection[v.variableCollectionId] = byCollection[v.variableCollectionId] || []).push(v);
+  });
+
+  var result = [];
+  for (var i = 0; i < collections.length; i++) {
+    var collection = collections[i];
+    var modes = collection.modes.map(function (m) {
+      return { modeId: m.modeId, name: m.name };
+    });
+    var vars = byCollection[collection.id] || [];
+    var out = [];
+
+    for (var j = 0; j < vars.length; j++) {
+      var v = vars[j];
+      var valuesByMode = {};
+      for (var k = 0; k < modes.length; k++) {
+        var raw = v.valuesByMode[modes[k].modeId];
+        valuesByMode[modes[k].name] =
+          raw === undefined
+            ? null
+            : await resolveVariableValue(raw, v.resolvedType, nameById);
+      }
+      out.push({
+        id: v.id,
+        name: v.name,
+        type: v.resolvedType,
+        scopes: v.scopes,
+        valuesByMode: valuesByMode,
+      });
+    }
+
+    result.push({
+      id: collection.id,
+      name: collection.name,
+      modes: modes,
+      variableCount: out.length,
+      variables: out,
+    });
+  }
+
+  return {
+    collectionCount: result.length,
+    variableCount: variables.length,
+    collections: result,
+  };
+}
+
+// Properties worth flagging, with the boundVariables keys that would prove
+// they're NOT hardcoded, plus the style field that means "bound to a style".
+var HARDCODE_CHECKS = [
+  { prop: "fills", keys: ["fills"], styleId: "fillStyleId", paints: true },
+  { prop: "strokes", keys: ["strokes"], styleId: "strokeStyleId", paints: true },
+  {
+    prop: "cornerRadius",
+    keys: ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"],
+  },
+  { prop: "itemSpacing", keys: ["itemSpacing"] },
+  { prop: "paddingLeft", keys: ["paddingLeft"] },
+  { prop: "paddingRight", keys: ["paddingRight"] },
+  { prop: "paddingTop", keys: ["paddingTop"] },
+  { prop: "paddingBottom", keys: ["paddingBottom"] },
+  { prop: "fontSize", keys: ["fontSize"], styleId: "textStyleId" },
+];
+
+function isBound(bound, keys) {
+  return keys.some(function (k) {
+    var b = bound[k];
+    if (!b) return false;
+    return Array.isArray(b) ? b.length > 0 : true;
+  });
+}
+
+function hardcodedProps(node) {
+  var bound = node.boundVariables || {};
+  var out = [];
+  for (var i = 0; i < HARDCODE_CHECKS.length; i++) {
+    var check = HARDCODE_CHECKS[i];
+    var value = node[check.prop];
+    if (value === undefined || value === null) continue;
+    if (value === figma.mixed) continue;
+    // ponytail: a 0 radius/spacing/padding is almost never a missing token,
+    // and flagging it buries the real findings. Drop the guard if 0 matters.
+    if (value === 0) continue;
+    if (check.paints) {
+      if (!Array.isArray(value)) continue;
+      // Only solid paints are token candidates — image fills aren't.
+      var solid = value.filter(function (p) {
+        return p.type === "SOLID" && p.visible !== false;
+      });
+      if (!solid.length) continue;
+    }
+    if (check.styleId && node[check.styleId]) continue;
+    // ponytail: any binding on the property counts as bound. A node with 2 fills
+    // where only one is tokenised reads as clean; split per-paint if that bites.
+    if (isBound(bound, check.keys)) continue;
+    out.push(check.prop);
+  }
+  return out;
+}
+
+async function getVariableBindings(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  var detail = params.detail !== false;
+  var limit = params.limit || 500;
+  var offset = params.offset || 0;
+  var exclude = params.excludePages || [];
+
+  var targets = [];
+  if (params.nodeId) {
+    var root = await figma.getNodeByIdAsync(params.nodeId);
+    if (!root) throw new Error("Node not found with ID: " + params.nodeId);
+    targets.push({ pageName: pageNameOf(root), node: root });
+  } else {
+    // documentAccess is dynamic-page: without this, other pages scan as empty.
+    await figma.loadAllPagesAsync();
+    figma.root.children.forEach(function (p) {
+      if (params.pageName && p.name !== params.pageName) return;
+      if (exclude.indexOf(p.name) !== -1) return;
+      targets.push({ pageName: p.name, node: p });
+    });
+  }
+
+  await sendProgressUpdate(
+    commandId,
+    "get_variable_bindings",
+    "started",
+    0,
+    targets.length,
+    0,
+    "Scanning " + targets.length + " target(s) for hardcoded values...",
+    null
+  );
+
+  var findings = [];
+  var byProperty = {};
+  var byComponent = {};
+  var scannedNodes = 0;
+
+  for (var i = 0; i < targets.length; i++) {
+    var target = targets[i];
+    if (target.node.type === "PAGE") await target.node.loadAsync();
+
+    var nodes = target.node.findAll
+      ? target.node.findAll(function () {
+          return true;
+        })
+      : [];
+    if (target.node.type !== "PAGE") nodes = [target.node].concat(nodes);
+
+    for (var j = 0; j < nodes.length; j++) {
+      scannedNodes++;
+      var props = hardcodedProps(nodes[j]);
+      if (!props.length) continue;
+      props.forEach(function (p) {
+        byProperty[p] = (byProperty[p] || 0) + 1;
+      });
+      var owner = nearestComponent(nodes[j]);
+      var ownerKey = owner.component || "(no component)";
+      var bucket = byComponent[ownerKey] || (byComponent[ownerKey] = { total: 0, variants: {} });
+      bucket.total++;
+      if (owner.variant) bucket.variants[owner.variant] = (bucket.variants[owner.variant] || 0) + 1;
+      findings.push({
+        id: nodes[j].id,
+        name: nodes[j].name,
+        type: nodes[j].type,
+        page: target.pageName,
+        component: owner.component,
+        variant: owner.variant,
+        hardcoded: props,
+      });
+    }
+
+    await sendProgressUpdate(
+      commandId,
+      "get_variable_bindings",
+      i + 1 === targets.length ? "completed" : "in_progress",
+      Math.round(((i + 1) / targets.length) * 100),
+      targets.length,
+      i + 1,
+      "Scanned " + target.pageName + ": " + findings.length + " hardcoded node(s) so far",
+      null
+    );
+  }
+
+  var page = detail ? findings.slice(offset, offset + limit) : [];
+  return {
+    scannedNodes: scannedNodes,
+    totalFindings: findings.length,
+    byProperty: byProperty,
+    byComponent: byComponent,
+    offset: offset,
+    limit: limit,
+    returned: page.length,
+    hasMore: detail && offset + page.length < findings.length,
+    findings: page,
+  };
+}
+
+// Unbind shared styles while keeping the painted values. Setting a *StyleId
+// to "" bakes the current paint/effect in as a raw value, which is how you cut
+// a dependency on an external library without changing how anything looks.
+async function unbindStyles(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  if (!params.nodeId) throw new Error("nodeId is required");
+  var onlyRemote = params.onlyRemote !== false;
+  var dryRun = params.dryRun === true;
+
+  var root = await figma.getNodeByIdAsync(params.nodeId);
+  if (!root) throw new Error("Node not found with ID: " + params.nodeId);
+
+  var FIELDS = [
+    "fillStyleId",
+    "strokeStyleId",
+    "effectStyleId",
+    "gridStyleId",
+    "textStyleId",
+  ];
+  var SETTERS = {
+    fillStyleId: "setFillStyleIdAsync",
+    strokeStyleId: "setStrokeStyleIdAsync",
+    effectStyleId: "setEffectStyleIdAsync",
+    gridStyleId: "setGridStyleIdAsync",
+    textStyleId: "setTextStyleIdAsync",
+  };
+
+  var nodes = root.findAll(function () {
+    return true;
+  });
+  nodes = [root].concat(nodes);
+
+  var remoteCache = {};
+  async function isRemote(styleId) {
+    if (remoteCache[styleId] !== undefined) return remoteCache[styleId];
+    var r = false;
+    try {
+      var st = await figma.getStyleByIdAsync(styleId);
+      r = !!(st && st.remote);
+    } catch (e) {
+      r = false;
+    }
+    remoteCache[styleId] = r;
+    return r;
+  }
+
+  var cleared = [];
+  var kept = [];
+
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    for (var f = 0; f < FIELDS.length; f++) {
+      var field = FIELDS[f];
+      var val = safeGet(node, field);
+      if (!val || typeof val !== "string") continue; // absent or figma.mixed
+      var remote = await isRemote(val);
+      if (onlyRemote && !remote) {
+        kept.push({ id: node.id, name: node.name, field: field, styleId: val });
+        continue;
+      }
+      var rec = {
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        field: field,
+        styleId: val,
+        remote: remote,
+      };
+      if (!dryRun) {
+        // documentAccess: dynamic-page forbids the sync setters.
+        var setter = SETTERS[field];
+        try {
+          if (typeof node[setter] === "function") {
+            await node[setter]("");
+          } else {
+            node[field] = "";
+          }
+        } catch (e) {
+          rec.error = String(e && e.message ? e.message : e);
+        }
+      }
+      cleared.push(rec);
+    }
+  }
+
+  await sendProgressUpdate(
+    commandId,
+    "unbind_styles",
+    "completed",
+    100,
+    1,
+    1,
+    (dryRun ? "Dry run: " : "Unbound ") + cleared.length + " style binding(s)",
+    null
+  );
+
+  var byField = {};
+  cleared.forEach(function (c) {
+    byField[c.field] = (byField[c.field] || 0) + 1;
+  });
+
+  return {
+    dryRun: dryRun,
+    rootName: root.name,
+    scannedNodes: nodes.length,
+    clearedCount: cleared.length,
+    byField: byField,
+    keptLocalCount: kept.length,
+    keptLocalSample: kept.slice(0, 10),
+    sample: cleared.slice(0, 15),
+  };
+}
+
+// Detach instances under a node. Figma does not allow detaching an instance
+// that sits inside another instance, so this runs in passes: detach the
+// outermost ones, which turns previously nested instances into real editable
+// instances, then repeat. Irreversible, hence dryRun.
+async function detachInstances(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  if (!params.nodeId) throw new Error("nodeId is required");
+  var onlyRemote = params.onlyRemote !== false;
+  var dryRun = params.dryRun === true;
+  var maxPasses = params.maxPasses || 12;
+
+  var root = await figma.getNodeByIdAsync(params.nodeId);
+  if (!root) throw new Error("Node not found with ID: " + params.nodeId);
+
+  function hasInstanceAncestor(node, stopAt) {
+    var p = node.parent;
+    while (p && p.id !== stopAt.id) {
+      if (p.type === "INSTANCE") return true;
+      p = p.parent;
+    }
+    return false;
+  }
+
+  var detached = [];
+  var skipped = [];
+  var passes = 0;
+
+  for (var pass = 0; pass < maxPasses; pass++) {
+    var all = root.findAll(function (n) {
+      return n.type === "INSTANCE";
+    });
+    if (root.type === "INSTANCE") all = [root].concat(all);
+
+    var targets = [];
+    for (var i = 0; i < all.length; i++) {
+      var inst = all[i];
+      if (hasInstanceAncestor(inst, root)) continue; // not detachable yet
+      var main = null;
+      try {
+        main = await inst.getMainComponentAsync();
+      } catch (e) {
+        main = null;
+      }
+      var isRemote = !!(main && main.remote);
+      if (onlyRemote && !isRemote) {
+        skipped.push({ id: inst.id, name: inst.name, reason: "local component" });
+        continue;
+      }
+      targets.push({
+        node: inst,
+        id: inst.id,
+        name: inst.name,
+        mainName: main ? main.name : null,
+        remote: isRemote,
+      });
+    }
+
+    if (!targets.length) break;
+    passes = pass + 1;
+
+    for (var j = 0; j < targets.length; j++) {
+      var t = targets[j];
+      detached.push({
+        id: t.id,
+        name: t.name,
+        mainComponent: t.mainName,
+        remote: t.remote,
+        pass: passes,
+      });
+      if (!dryRun) {
+        try {
+          t.node.detachInstance();
+        } catch (e) {
+          detached[detached.length - 1].error = String(
+            e && e.message ? e.message : e
+          );
+        }
+      }
+    }
+
+    await sendProgressUpdate(
+      commandId,
+      "detach_instances",
+      "in_progress",
+      Math.round(((pass + 1) / maxPasses) * 100),
+      maxPasses,
+      pass + 1,
+      "Pass " + passes + ": " + targets.length + " instance(s)",
+      null
+    );
+
+    if (dryRun) break; // nothing changed, so further passes would repeat
+  }
+
+  await sendProgressUpdate(
+    commandId,
+    "detach_instances",
+    "completed",
+    100,
+    1,
+    1,
+    (dryRun ? "Dry run: " : "Detached ") + detached.length + " instance(s)",
+    null
+  );
+
+  return {
+    dryRun: dryRun,
+    rootName: root.name,
+    passes: passes,
+    detachedCount: detached.length,
+    detached: detached,
+    skippedCount: skipped.length,
+    skippedSample: skipped.slice(0, 10),
+  };
+}
+
+// Hyperlinks on text. Not present in the JSON_REST_V1 export, but readable
+// off live TEXT nodes. Answers "does this index/link actually point anywhere".
+async function getHyperlinks(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  var exclude = params.excludePages || [];
+
+  var targets = [];
+  if (params.nodeId) {
+    var root = await figma.getNodeByIdAsync(params.nodeId);
+    if (!root) throw new Error("Node not found with ID: " + params.nodeId);
+    targets.push({ pageName: pageNameOf(root), node: root });
+  } else {
+    await figma.loadAllPagesAsync();
+    figma.root.children.forEach(function (p) {
+      if (params.pageName && p.name !== params.pageName) return;
+      if (exclude.indexOf(p.name) !== -1) return;
+      targets.push({ pageName: p.name, node: p });
+    });
+  }
+
+  var links = [];
+  var textNodes = 0;
+
+  for (var i = 0; i < targets.length; i++) {
+    var target = targets[i];
+    if (target.node.type === "PAGE") await target.node.loadAsync();
+
+    var nodes = target.node.findAll
+      ? target.node.findAll(function (n) {
+          return n.type === "TEXT";
+        })
+      : [];
+    if (target.node.type === "TEXT") nodes = [target.node].concat(nodes);
+
+    for (var j = 0; j < nodes.length; j++) {
+      var node = nodes[j];
+      textNodes++;
+      var segments = [];
+      try {
+        segments = node.getStyledTextSegments(["hyperlink"]) || [];
+      } catch (e) {
+        continue;
+      }
+      for (var k = 0; k < segments.length; k++) {
+        var seg = segments[k];
+        if (!seg.hyperlink) continue;
+        var target_ = seg.hyperlink;
+        var entry = {
+          id: node.id,
+          name: node.name,
+          page: target.pageName,
+          text: seg.characters,
+          linkType: target_.type,
+          value: target_.value,
+        };
+        // A NODE link can point at something that no longer exists.
+        if (target_.type === "NODE") {
+          try {
+            var dest = await figma.getNodeByIdAsync(target_.value);
+            entry.destExists = !!dest;
+            entry.destName = dest ? dest.name : null;
+            entry.destPage = dest ? pageNameOf(dest) : null;
+          } catch (e2) {
+            entry.destExists = false;
+            entry.destError = String(e2 && e2.message ? e2.message : e2);
+          }
+        }
+        links.push(entry);
+      }
+    }
+
+    await sendProgressUpdate(
+      commandId,
+      "get_hyperlinks",
+      i + 1 === targets.length ? "completed" : "in_progress",
+      Math.round(((i + 1) / targets.length) * 100),
+      targets.length,
+      i + 1,
+      "Scanned " + target.pageName + ": " + links.length + " link(s) so far",
+      null
+    );
+  }
+
+  return { textNodes: textNodes, totalLinks: links.length, links: links };
+}
+
+// Auto layout / sizing / padding / effect / shared-style audit.
+// exportAsync(JSON_REST_V1) drops all of these, so read them off live nodes.
+function safeGet(node, key) {
+  try {
+    return key in node ? node[key] : undefined;
+  } catch (e) {
+    return undefined;
+  }
+}
+
+async function getLayoutAudit(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  var exclude = params.excludePages || [];
+
+  var targets = [];
+  if (params.nodeId) {
+    var root = await figma.getNodeByIdAsync(params.nodeId);
+    if (!root) throw new Error("Node not found with ID: " + params.nodeId);
+    targets.push({ pageName: pageNameOf(root), node: root });
+  } else {
+    await figma.loadAllPagesAsync();
+    figma.root.children.forEach(function (p) {
+      if (params.pageName && p.name !== params.pageName) return;
+      if (exclude.indexOf(p.name) !== -1) return;
+      targets.push({ pageName: p.name, node: p });
+    });
+  }
+
+  await sendProgressUpdate(
+    commandId,
+    "get_layout_audit",
+    "started",
+    0,
+    targets.length,
+    0,
+    "Auditing layout on " + targets.length + " target(s)...",
+    null
+  );
+
+  var byComponent = {};
+  var scannedNodes = 0;
+
+  function bucketFor(name, page) {
+    var key = name || "(no component)";
+    if (!byComponent[key]) {
+      byComponent[key] = {
+        page: page,
+        nodes: 0,
+        autoLayoutFrames: 0,
+        noAutoLayoutFrames: 0,
+        sizing: { HUG: 0, FILL: 0, FIXED: 0 },
+        paddingValues: {},
+        itemSpacingValues: {},
+        textNodes: 0,
+        textWithSharedStyle: 0,
+        fillNodes: 0,
+        fillWithSharedStyle: 0,
+        effectNodes: [],
+      };
+    }
+    return byComponent[key];
+  }
+
+  for (var i = 0; i < targets.length; i++) {
+    var target = targets[i];
+    if (target.node.type === "PAGE") await target.node.loadAsync();
+
+    var nodes = target.node.findAll
+      ? target.node.findAll(function () {
+          return true;
+        })
+      : [];
+    if (target.node.type !== "PAGE") nodes = [target.node].concat(nodes);
+
+    for (var j = 0; j < nodes.length; j++) {
+      var node = nodes[j];
+      scannedNodes++;
+      var owner = nearestComponent(node);
+      var b = bucketFor(owner.component, target.pageName);
+      b.nodes++;
+
+      var layoutMode = safeGet(node, "layoutMode");
+      if (layoutMode !== undefined) {
+        if (layoutMode === "NONE") b.noAutoLayoutFrames++;
+        else {
+          b.autoLayoutFrames++;
+          var sp = safeGet(node, "itemSpacing");
+          if (typeof sp === "number")
+            b.itemSpacingValues[sp] = (b.itemSpacingValues[sp] || 0) + 1;
+          ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom"].forEach(
+            function (p) {
+              var v = safeGet(node, p);
+              if (typeof v === "number")
+                b.paddingValues[v] = (b.paddingValues[v] || 0) + 1;
+            }
+          );
+        }
+      }
+
+      ["layoutSizingHorizontal", "layoutSizingVertical"].forEach(function (k) {
+        var v = safeGet(node, k);
+        if (v && b.sizing[v] !== undefined) b.sizing[v]++;
+      });
+
+      if (node.type === "TEXT") {
+        b.textNodes++;
+        var ts = safeGet(node, "textStyleId");
+        if (ts && typeof ts === "string") b.textWithSharedStyle++;
+      }
+
+      var fills = safeGet(node, "fills");
+      if (fills && fills !== figma.mixed && fills.length > 0) {
+        b.fillNodes++;
+        var fs = safeGet(node, "fillStyleId");
+        if (fs && typeof fs === "string") b.fillWithSharedStyle++;
+      }
+
+      var effects = safeGet(node, "effects");
+      if (effects && effects.length > 0) {
+        b.effectNodes.push({
+          id: node.id,
+          name: node.name,
+          type: node.type,
+          effectStyleId: safeGet(node, "effectStyleId") || null,
+          effects: effects.map(function (e) {
+            return {
+              type: e.type,
+              visible: e.visible,
+              radius: e.radius,
+              spread: e.spread,
+              offset: e.offset,
+              color: e.color ? rgbaToHex(e.color) : undefined,
+            };
+          }),
+        });
+      }
+    }
+
+    await sendProgressUpdate(
+      commandId,
+      "get_layout_audit",
+      i + 1 === targets.length ? "completed" : "in_progress",
+      Math.round(((i + 1) / targets.length) * 100),
+      targets.length,
+      i + 1,
+      "Audited " + target.pageName + " (" + scannedNodes + " nodes so far)",
+      null
+    );
+  }
+
+  return { scannedNodes: scannedNodes, byComponent: byComponent };
+}
+
+async function getInstanceCensus(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  var exclude = params.excludePages || [];
+
+  await figma.loadAllPagesAsync();
+  var instances = figma.root.findAllWithCriteria({ types: ["INSTANCE"] });
+  if (params.pageName || exclude.length) {
+    instances = instances.filter(function (n) {
+      var page = pageNameOf(n);
+      if (params.pageName && page !== params.pageName) return false;
+      return exclude.indexOf(page) === -1;
+    });
+  }
+
+  await sendProgressUpdate(
+    commandId,
+    "get_instance_census",
+    "started",
+    0,
+    instances.length,
+    0,
+    "Counting " + instances.length + " instance(s)...",
+    null
+  );
+
+  var census = {};
+  var unresolved = 0;
+
+  for (var i = 0; i < instances.length; i++) {
+    var instance = instances[i];
+    var main = null;
+    try {
+      main =
+        typeof instance.getMainComponentAsync === "function"
+          ? await instance.getMainComponentAsync()
+          : instance.mainComponent;
+    } catch (e) {
+      main = null;
+    }
+    if (!main) {
+      unresolved++;
+    } else {
+      var set = main.parent && main.parent.type === "COMPONENT_SET" ? main.parent : null;
+      if (!census[main.id]) {
+        census[main.id] = {
+          componentName: main.name,
+          componentSetName: set ? set.name : null,
+          key: main.key || null,
+          source: main.remote ? "library" : "local",
+          count: 0,
+        };
+      }
+      census[main.id].count++;
+    }
+
+    if ((i + 1) % 100 === 0 || i + 1 === instances.length) {
+      await sendProgressUpdate(
+        commandId,
+        "get_instance_census",
+        i + 1 === instances.length ? "completed" : "in_progress",
+        Math.round(((i + 1) / (instances.length || 1)) * 100),
+        instances.length,
+        i + 1,
+        "Resolved " + (i + 1) + "/" + instances.length + " instances",
+        null
+      );
+    }
+  }
+
+  var components = Object.keys(census)
+    .map(function (id) {
+      return census[id];
+    })
+    .sort(function (a, b) {
+      return b.count - a.count;
+    });
+
+  var libraryInstances = components.reduce(function (sum, c) {
+    return sum + (c.source === "library" ? c.count : 0);
+  }, 0);
+
+  return {
+    totalInstances: instances.length,
+    unresolvedInstances: unresolved,
+    uniqueComponents: components.length,
+    libraryInstances: libraryInstances,
+    localInstances: instances.length - unresolved - libraryInstances,
+    components: components,
   };
 }
