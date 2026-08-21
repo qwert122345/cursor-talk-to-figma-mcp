@@ -429,9 +429,18 @@ server.tool(
       a: import_zod.z.number().min(0).max(1).optional().describe("Alpha component (0-1)")
     }).optional().describe("Font color in RGBA format"),
     name: import_zod.z.string().optional().describe("Semantic layer name for the text node"),
-    parentId: import_zod.z.string().optional().describe("Optional parent node ID to append the text to")
+    parentId: import_zod.z.string().optional().describe("Optional parent node ID to append the text to"),
+    fontFamily: import_zod.z.string().optional().describe(
+      "Font family name, e.g. 'SUIT'. Defaults to Inter. Falls back to Inter if the family is not available."
+    ),
+    fontStyle: import_zod.z.string().optional().describe(
+      "Font style name, e.g. 'Medium', 'Bold', 'ExtraBold'. Overrides the fontWeight mapping when given."
+    ),
+    width: import_zod.z.number().optional().describe(
+      "Fixed width with automatic height (textAutoResize=HEIGHT), so long text wraps instead of being clipped."
+    )
   },
-  async ({ x, y, text, fontSize, fontWeight, fontColor, name, parentId }) => {
+  async ({ x, y, text, fontSize, fontWeight, fontColor, name, parentId, fontFamily, fontStyle, width }) => {
     try {
       const result = await sendCommandToFigma("create_text", {
         x,
@@ -441,14 +450,19 @@ server.tool(
         fontWeight: fontWeight || 400,
         fontColor: fontColor || { r: 0, g: 0, b: 0, a: 1 },
         name: name || "Text",
-        parentId
+        parentId,
+        fontFamily,
+        fontStyle,
+        width
       });
       const typedResult = result;
+      const font = typedResult.fontName ? ` [font: ${typedResult.fontName.family} ${typedResult.fontName.style}]` : "";
+      const fallback = typedResult.fontFallbackReason ? ` (FELL BACK to Inter: ${typedResult.fontFallbackReason})` : "";
       return {
         content: [
           {
             type: "text",
-            text: `Created text "${typedResult.name}" with ID: ${typedResult.id}`
+            text: `Created text "${typedResult.name}" with ID: ${typedResult.id}${font}${fallback}`
           }
         ]
       };
@@ -458,6 +472,85 @@ server.tool(
           {
             type: "text",
             text: `Error creating text: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+var tableCellSchema = import_zod.z.object({
+  text: import_zod.z.string().describe("Cell text"),
+  width: import_zod.z.number().describe("Fixed cell width; height grows to fit wrapped text"),
+  name: import_zod.z.string().optional().describe("Layer name for the cell, e.g. Cell_Item"),
+  style: import_zod.z.string().optional().describe("Font style, e.g. 'Regular', 'Medium', 'Bold'. Default Regular"),
+  size: import_zod.z.number().optional().describe("Font size for this cell"),
+  color: import_zod.z.object({
+    r: import_zod.z.number().min(0).max(1),
+    g: import_zod.z.number().min(0).max(1),
+    b: import_zod.z.number().min(0).max(1),
+    a: import_zod.z.number().min(0).max(1).optional()
+  }).optional().describe("Text color (0-1 RGBA)")
+});
+server.tool(
+  "create_table_rows",
+  "Build whole table rows (row frame + text cells + optional checkbox result column + divider) in one call. Use instead of creating each cell node separately: cell-by-cell creation costs ~17 round trips per row and risks dropping the websocket mid-build.",
+  {
+    parentId: import_zod.z.string().describe("Container to append rows to. Should be a VERTICAL auto-layout frame."),
+    rows: import_zod.z.array(
+      import_zod.z.object({
+        name: import_zod.z.string().optional().describe("Layer name, e.g. Row_C4_03"),
+        cells: import_zod.z.array(tableCellSchema).describe("Cells, left to right"),
+        fill: import_zod.z.object({
+          r: import_zod.z.number().min(0).max(1),
+          g: import_zod.z.number().min(0).max(1),
+          b: import_zod.z.number().min(0).max(1),
+          a: import_zod.z.number().min(0).max(1).optional()
+        }).optional().describe("Row background. Defaults to white"),
+        result: import_zod.z.object({
+          width: import_zod.z.number().optional().describe("Result column width (default 150)"),
+          checkbox: import_zod.z.boolean().optional().describe("Add a 20x20 empty checkbox"),
+          text: import_zod.z.string().optional().describe("Status text (usually empty)"),
+          name: import_zod.z.string().optional().describe("Layer name, e.g. Result_2026Q3"),
+          textName: import_zod.z.string().optional(),
+          style: import_zod.z.string().optional(),
+          size: import_zod.z.number().optional()
+        }).optional().describe("Trailing per-round result column"),
+        divider: import_zod.z.boolean().optional().describe("Append a 1px divider after this row (default true)")
+      })
+    ).describe("Rows to create, top to bottom"),
+    rowWidth: import_zod.z.number().optional().describe("Row width (default 1620)"),
+    fontFamily: import_zod.z.string().optional().describe("Font family (default SUIT)"),
+    fontSize: import_zod.z.number().optional().describe("Default font size (default 12)"),
+    itemSpacing: import_zod.z.number().optional().describe("Gap between cells (default 12)"),
+    paddingTop: import_zod.z.number().optional(),
+    paddingBottom: import_zod.z.number().optional(),
+    paddingLeft: import_zod.z.number().optional(),
+    paddingRight: import_zod.z.number().optional(),
+    dividerColor: import_zod.z.object({
+      r: import_zod.z.number().min(0).max(1),
+      g: import_zod.z.number().min(0).max(1),
+      b: import_zod.z.number().min(0).max(1)
+    }).optional()
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("create_table_rows", params);
+      const fallback = result.fontFallbacks && result.fontFallbacks.length ? `
+FONT FALLBACKS: ${result.fontFallbacks.join(", ")}` : "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created ${result.rowCount} rows: ${result.rows.map((r) => `${r.name}=${r.id}`).join(", ")}${fallback}`
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating table rows: ${error instanceof Error ? error.message : String(error)}`
           }
         ]
       };

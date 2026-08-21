@@ -560,8 +560,26 @@ server.tool(
       .string()
       .optional()
       .describe("Optional parent node ID to append the text to"),
+    fontFamily: z
+      .string()
+      .optional()
+      .describe(
+        "Font family name, e.g. 'SUIT'. Defaults to Inter. Falls back to Inter if the family is not available."
+      ),
+    fontStyle: z
+      .string()
+      .optional()
+      .describe(
+        "Font style name, e.g. 'Medium', 'Bold', 'ExtraBold'. Overrides the fontWeight mapping when given."
+      ),
+    width: z
+      .number()
+      .optional()
+      .describe(
+        "Fixed width with automatic height (textAutoResize=HEIGHT), so long text wraps instead of being clipped."
+      ),
   },
-  async ({ x, y, text, fontSize, fontWeight, fontColor, name, parentId }: any) => {
+  async ({ x, y, text, fontSize, fontWeight, fontColor, name, parentId, fontFamily, fontStyle, width }: any) => {
     try {
       const result = await sendCommandToFigma("create_text", {
         x,
@@ -572,13 +590,29 @@ server.tool(
         fontColor: fontColor || { r: 0, g: 0, b: 0, a: 1 },
         name: name || "Text",
         parentId,
+        fontFamily,
+        fontStyle,
+        width,
       });
-      const typedResult = result as { name: string; id: string };
+      const typedResult = result as {
+        name: string;
+        id: string;
+        fontName?: { family: string; style: string };
+        fontFallbackReason?: string | null;
+      };
+      // Report the font that actually landed: a silent fallback to Inter is the
+      // failure mode that is easy to miss until the whole page is built.
+      const font = typedResult.fontName
+        ? ` [font: ${typedResult.fontName.family} ${typedResult.fontName.style}]`
+        : "";
+      const fallback = typedResult.fontFallbackReason
+        ? ` (FELL BACK to Inter: ${typedResult.fontFallbackReason})`
+        : "";
       return {
         content: [
           {
             type: "text",
-            text: `Created text "${typedResult.name}" with ID: ${typedResult.id}`,
+            text: `Created text "${typedResult.name}" with ID: ${typedResult.id}${font}${fallback}`,
           },
         ],
       };
@@ -588,6 +622,118 @@ server.tool(
           {
             type: "text",
             text: `Error creating text: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Table Rows Tool (E-7)
+const tableCellSchema = z.object({
+  text: z.string().describe("Cell text"),
+  width: z.number().describe("Fixed cell width; height grows to fit wrapped text"),
+  name: z.string().optional().describe("Layer name for the cell, e.g. Cell_Item"),
+  style: z
+    .string()
+    .optional()
+    .describe("Font style, e.g. 'Regular', 'Medium', 'Bold'. Default Regular"),
+  size: z.number().optional().describe("Font size for this cell"),
+  color: z
+    .object({
+      r: z.number().min(0).max(1),
+      g: z.number().min(0).max(1),
+      b: z.number().min(0).max(1),
+      a: z.number().min(0).max(1).optional(),
+    })
+    .optional()
+    .describe("Text color (0-1 RGBA)"),
+});
+
+server.tool(
+  "create_table_rows",
+  "Build whole table rows (row frame + text cells + optional checkbox result column + divider) in one call. Use instead of creating each cell node separately: cell-by-cell creation costs ~17 round trips per row and risks dropping the websocket mid-build.",
+  {
+    parentId: z
+      .string()
+      .describe("Container to append rows to. Should be a VERTICAL auto-layout frame."),
+    rows: z
+      .array(
+        z.object({
+          name: z.string().optional().describe("Layer name, e.g. Row_C4_03"),
+          cells: z.array(tableCellSchema).describe("Cells, left to right"),
+          fill: z
+            .object({
+              r: z.number().min(0).max(1),
+              g: z.number().min(0).max(1),
+              b: z.number().min(0).max(1),
+              a: z.number().min(0).max(1).optional(),
+            })
+            .optional()
+            .describe("Row background. Defaults to white"),
+          result: z
+            .object({
+              width: z.number().optional().describe("Result column width (default 150)"),
+              checkbox: z.boolean().optional().describe("Add a 20x20 empty checkbox"),
+              text: z.string().optional().describe("Status text (usually empty)"),
+              name: z.string().optional().describe("Layer name, e.g. Result_2026Q3"),
+              textName: z.string().optional(),
+              style: z.string().optional(),
+              size: z.number().optional(),
+            })
+            .optional()
+            .describe("Trailing per-round result column"),
+          divider: z
+            .boolean()
+            .optional()
+            .describe("Append a 1px divider after this row (default true)"),
+        })
+      )
+      .describe("Rows to create, top to bottom"),
+    rowWidth: z.number().optional().describe("Row width (default 1620)"),
+    fontFamily: z.string().optional().describe("Font family (default SUIT)"),
+    fontSize: z.number().optional().describe("Default font size (default 12)"),
+    itemSpacing: z.number().optional().describe("Gap between cells (default 12)"),
+    paddingTop: z.number().optional(),
+    paddingBottom: z.number().optional(),
+    paddingLeft: z.number().optional(),
+    paddingRight: z.number().optional(),
+    dividerColor: z
+      .object({
+        r: z.number().min(0).max(1),
+        g: z.number().min(0).max(1),
+        b: z.number().min(0).max(1),
+      })
+      .optional(),
+  },
+  async (params: any) => {
+    try {
+      const result = (await sendCommandToFigma("create_table_rows", params)) as {
+        rowCount: number;
+        rows: Array<{ id: string; name: string }>;
+        fontFallbacks?: string[];
+      };
+      const fallback =
+        result.fontFallbacks && result.fontFallbacks.length
+          ? `\nFONT FALLBACKS: ${result.fontFallbacks.join(", ")}`
+          : "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created ${result.rowCount} rows: ${result.rows
+              .map((r) => `${r.name}=${r.id}`)
+              .join(", ")}${fallback}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error creating table rows: ${error instanceof Error ? error.message : String(error)
               }`,
           },
         ],
@@ -2868,6 +3014,7 @@ type FigmaCommand =
   | "create_rectangle"
   | "create_frame"
   | "create_text"
+  | "create_table_rows"
   | "set_fill_color"
   | "set_stroke_color"
   | "move_node"

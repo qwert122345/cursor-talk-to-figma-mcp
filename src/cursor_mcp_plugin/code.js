@@ -130,6 +130,8 @@ async function handleCommand(command, params) {
       return await createFrame(params);
     case "create_text":
       return await createText(params);
+    case "create_table_rows":
+      return await createTableRows(params);
     case "set_fill_color":
       return await setFillColor(params);
     case "set_stroke_color":
@@ -845,6 +847,9 @@ async function createText(params) {
     fontColor = { r: 0, g: 0, b: 0, a: 1 }, // Default to black
     name = "",
     parentId,
+    fontFamily,
+    fontStyle,
+    width,
   } = params || {};
 
   // Map common font weights to Figma font styles
@@ -877,17 +882,35 @@ async function createText(params) {
   textNode.x = x;
   textNode.y = y;
   textNode.name = name || text;
+  // E-5: honour an explicit font family/style, falling back to Inter so a bad
+  // family name degrades instead of failing every text node in a batch.
+  const wantedFont = {
+    family: fontFamily || "Inter",
+    style: fontStyle || getFontStyle(fontWeight),
+  };
+  let appliedFont = wantedFont;
+  let fontFallbackReason = null;
   try {
-    await figma.loadFontAsync({
-      family: "Inter",
-      style: getFontStyle(fontWeight),
-    });
-    textNode.fontName = { family: "Inter", style: getFontStyle(fontWeight) };
+    await figma.loadFontAsync(wantedFont);
+  } catch (error) {
+    fontFallbackReason = String((error && error.message) || error);
+    appliedFont = { family: "Inter", style: getFontStyle(fontWeight) };
+    await figma.loadFontAsync(appliedFont);
+  }
+  try {
+    textNode.fontName = appliedFont;
     textNode.fontSize = parseInt(fontSize);
   } catch (error) {
-    console.error("Error setting font size", error);
+    console.error("Error setting font", error);
   }
   setCharacters(textNode, text);
+
+  // E-7: a fixed width with auto height. resize() alone sets textAutoResize to
+  // NONE, which silently clips every multi-line cell, so set HEIGHT after.
+  if (typeof width === "number" && width > 0) {
+    textNode.textAutoResize = "HEIGHT";
+    textNode.resize(width, textNode.height);
+  }
 
   // Set text color
   const paintStyle = {
@@ -927,8 +950,169 @@ async function createText(params) {
     fontWeight: fontWeight,
     fontColor: fontColor,
     fontName: textNode.fontName,
+    fontFallbackReason: fontFallbackReason,
     fills: textNode.fills,
     parentId: textNode.parent ? textNode.parent.id : undefined,
+  };
+}
+
+// E-7: build whole table rows in one call. Doing this cell-by-cell over the
+// websocket takes ~17 round trips per row, which is both slow and the failure
+// mode the plugin warns about (dropped socket mid-build).
+async function createTableRows(params) {
+  const {
+    parentId,
+    rowWidth = 1620,
+    fontFamily = "SUIT",
+    fontSize = 12,
+    paddingTop = 10,
+    paddingBottom = 10,
+    paddingLeft = 16,
+    paddingRight = 16,
+    itemSpacing = 12,
+    dividerColor = { r: 0.898, g: 0.91, b: 0.925 },
+    rows = [],
+  } = params || {};
+
+  const parent = await figma.getNodeByIdAsync(parentId);
+  if (!parent) throw new Error("Parent node not found with ID: " + parentId);
+  if (!("appendChild" in parent))
+    throw new Error("Parent node does not support children: " + parentId);
+
+  // Preload every (family, style) pair up front. loadFontAsync per text node is
+  // what makes the cell-by-cell approach slow.
+  const wantedStyles = new Set(["Regular", "Medium"]);
+  rows.forEach((row) => {
+    (row.cells || []).forEach((cell) => wantedStyles.add(cell.style || "Regular"));
+    if (row.result) wantedStyles.add(row.result.style || "Regular");
+  });
+  let family = fontFamily;
+  const loaded = {};
+  const fontFallbacks = [];
+  for (const style of wantedStyles) {
+    try {
+      await figma.loadFontAsync({ family: family, style: style });
+      loaded[style] = { family: family, style: style };
+    } catch (e) {
+      const fb = { family: "Inter", style: style === "ExtraBold" ? "Extra Bold" : style };
+      try {
+        await figma.loadFontAsync(fb);
+        loaded[style] = fb;
+      } catch (e2) {
+        const last = { family: "Inter", style: "Regular" };
+        await figma.loadFontAsync(last);
+        loaded[style] = last;
+      }
+      fontFallbacks.push(family + " " + style + " -> " + loaded[style].family + " " + loaded[style].style);
+    }
+  }
+
+  // Fonts are already preloaded above, so assign `characters` directly instead
+  // of going through setCharacters(), which awaits loadFontAsync on every call.
+  // That await-per-cell is what made a 7-cell row take seconds.
+  const makeText = (spec) => {
+    const node = figma.createText();
+    const style = spec.style || "Regular";
+    node.fontName = loaded[style] || loaded["Regular"];
+    node.fontSize = spec.size || fontSize;
+    node.name = spec.name || "Cell_Text";
+    if (spec.color) {
+      node.fills = [
+        {
+          type: "SOLID",
+          color: { r: spec.color.r, g: spec.color.g, b: spec.color.b },
+          opacity: spec.color.a === undefined ? 1 : spec.color.a,
+        },
+      ];
+    }
+    node.characters = spec.text === undefined ? "" : String(spec.text);
+    if (typeof spec.width === "number" && spec.width > 0) {
+      node.textAutoResize = "HEIGHT";
+      node.resize(spec.width, node.height);
+    }
+    return node;
+  };
+
+  const created = [];
+  for (const row of rows) {
+    const rowFrame = figma.createFrame();
+    rowFrame.name = row.name || "Row";
+    rowFrame.layoutMode = "HORIZONTAL";
+    rowFrame.primaryAxisSizingMode = "FIXED";
+    rowFrame.counterAxisSizingMode = "AUTO";
+    rowFrame.counterAxisAlignItems = "MIN";
+    rowFrame.paddingTop = paddingTop;
+    rowFrame.paddingBottom = paddingBottom;
+    rowFrame.paddingLeft = paddingLeft;
+    rowFrame.paddingRight = paddingRight;
+    rowFrame.itemSpacing = itemSpacing;
+    rowFrame.resize(rowWidth, rowFrame.height);
+    if (row.fill) {
+      rowFrame.fills = [
+        {
+          type: "SOLID",
+          color: { r: row.fill.r, g: row.fill.g, b: row.fill.b },
+          opacity: row.fill.a === undefined ? 1 : row.fill.a,
+        },
+      ];
+    } else {
+      rowFrame.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
+    }
+    parent.appendChild(rowFrame);
+
+    for (const cell of row.cells || []) {
+      rowFrame.appendChild(makeText(cell));
+    }
+
+    if (row.result) {
+      const res = row.result;
+      const resFrame = figma.createFrame();
+      resFrame.name = res.name || "Result";
+      resFrame.layoutMode = "HORIZONTAL";
+      resFrame.primaryAxisSizingMode = "FIXED";
+      resFrame.counterAxisSizingMode = "AUTO";
+      resFrame.counterAxisAlignItems = "MIN";
+      resFrame.itemSpacing = 8;
+      resFrame.fills = [];
+      resFrame.resize(res.width || 150, resFrame.height);
+      rowFrame.appendChild(resFrame);
+      if (res.checkbox) {
+        const box = figma.createRectangle();
+        box.name = "Checkbox_Empty";
+        box.resize(20, 20);
+        box.cornerRadius = 4;
+        box.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
+        box.strokes = [{ type: "SOLID", color: { r: 0.776, g: 0.788, b: 0.812 } }];
+        box.strokeWeight = 1;
+        resFrame.appendChild(box);
+      }
+      resFrame.appendChild(
+        makeText({
+          name: res.textName || "Status_Empty",
+          text: res.text === undefined ? "" : res.text,
+          style: res.style || "Regular",
+          size: res.size || fontSize,
+          width: (res.width || 150) - (res.checkbox ? 28 : 0),
+        })
+      );
+    }
+
+    created.push({ id: rowFrame.id, name: rowFrame.name });
+
+    if (row.divider !== false) {
+      const line = figma.createRectangle();
+      line.name = "Divider_Row";
+      line.resize(rowWidth, 1);
+      line.fills = [{ type: "SOLID", color: dividerColor }];
+      parent.appendChild(line);
+    }
+  }
+
+  return {
+    parentId: parentId,
+    rowCount: created.length,
+    rows: created,
+    fontFallbacks: fontFallbacks,
   };
 }
 
