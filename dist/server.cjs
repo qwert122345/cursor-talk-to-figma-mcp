@@ -2134,8 +2134,109 @@ server.tool(
   }
 );
 server.tool(
+  "rename_multiple_nodes",
+  "Rename many nodes at once. Returns each node's previous and new name, plus per-node errors.",
+  {
+    items: import_zod.z.array(
+      import_zod.z.object({
+        nodeId: import_zod.z.string().describe("The ID of the node to rename"),
+        name: import_zod.z.string().describe("The new name")
+      })
+    ).describe("Nodes to rename")
+  },
+  async ({ items }) => {
+    try {
+      const result = await sendCommandToFigma("rename_multiple_nodes", { items });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming nodes: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "set_multiple_layout_sizing",
+  "Set layout sizing (FIXED/HUG/FILL) on many nodes at once. Works on auto-layout frames and on TEXT nodes that are auto-layout children. Returns per-node results and errors.",
+  {
+    nodeIds: import_zod.z.array(import_zod.z.string()).optional().describe("Nodes to apply the shared sizing modes below to (compact form)"),
+    layoutSizingHorizontal: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Horizontal sizing mode applied to every node that does not override it"),
+    layoutSizingVertical: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Vertical sizing mode applied to every node that does not override it"),
+    items: import_zod.z.array(
+      import_zod.z.object({
+        nodeId: import_zod.z.string().describe("The ID of the node to modify"),
+        layoutSizingHorizontal: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Horizontal sizing mode for this node"),
+        layoutSizingVertical: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Vertical sizing mode for this node")
+      })
+    ).optional().describe("Per-node form; overrides the shared modes above")
+  },
+  async ({ nodeIds, layoutSizingHorizontal, layoutSizingVertical, items }) => {
+    try {
+      const result = await sendCommandToFigma("set_multiple_layout_sizing", {
+        nodeIds,
+        layoutSizingHorizontal,
+        layoutSizingVertical,
+        items
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting layout sizing: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "clone_multiple_nodes",
+  "Clone many nodes at once, optionally inserting each clone into a given parent at a given index. Returns each clone's id plus the TEXT nodes inside it (id, name, characters) so their contents can be replaced without extra get_node_info round-trips.",
+  {
+    items: import_zod.z.array(
+      import_zod.z.object({
+        nodeId: import_zod.z.string().describe("The ID of the node to clone"),
+        parentId: import_zod.z.string().optional().describe("Parent to insert the clone into (default: the source node's parent)"),
+        index: import_zod.z.number().optional().describe("Child index to insert at (default: appended last)"),
+        x: import_zod.z.number().optional().describe("X position for the clone"),
+        y: import_zod.z.number().optional().describe("Y position for the clone"),
+        name: import_zod.z.string().optional().describe("Rename the clone")
+      })
+    ).describe("Clone operations to perform, in order"),
+    includeTexts: import_zod.z.boolean().optional().describe("Return the TEXT nodes inside each clone (default true)")
+  },
+  async ({ items, includeTexts }) => {
+    try {
+      const result = await sendCommandToFigma("clone_multiple_nodes", { items, includeTexts });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error cloning nodes: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "set_layout_sizing",
-  "Set horizontal and vertical sizing modes for an auto-layout frame in Figma",
+  "Set horizontal and vertical sizing modes for an auto-layout frame (or a TEXT node inside one) in Figma",
   {
     nodeId: import_zod.z.string().describe("The ID of the frame to modify"),
     layoutSizingHorizontal: import_zod.z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Horizontal sizing mode (HUG for frames/text only, FILL for auto-layout children only)"),

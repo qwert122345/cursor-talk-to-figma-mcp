@@ -20,7 +20,7 @@ const ctx = createContext({
 });
 runInContext(readFileSync("src/cursor_mcp_plugin/code.js", "utf8"), ctx);
 const { hardcodedProps, nearestComponent, paintsToValue, ancestorPath, collectBoundVars,
-        resolveScanTargets, safeGet } = ctx;
+        resolveScanTargets, safeGet, applyLayoutSizing } = ctx;
 
 const solid = [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }];
 
@@ -171,5 +171,54 @@ assert.equal(
   ),
   undefined
 );
+
+// applyLayoutSizing: a TEXT node inside an auto-layout frame can be told to
+// FILL. The original guard rejected TEXT outright, which made it impossible to
+// stop table cells being fixed-width.
+const autoParent = { layoutMode: "HORIZONTAL" };
+const text = { id: "1:2", name: "cell", type: "TEXT", parent: autoParent };
+assert.deepEqual(applyLayoutSizing(text, "FILL", "HUG"), {
+  id: "1:2",
+  name: "cell",
+  type: "TEXT",
+  layoutSizingHorizontal: "FILL",
+  layoutSizingVertical: "HUG",
+  layoutMode: undefined,
+});
+
+// TEXT is judged by its parent's layoutMode, frames by their own
+assert.doesNotThrow(() =>
+  applyLayoutSizing({ type: "FRAME", layoutMode: "VERTICAL", parent: autoParent }, "FILL")
+);
+assert.throws(
+  () => applyLayoutSizing({ type: "FRAME", layoutMode: "NONE", parent: autoParent }, "FILL"),
+  /auto-layout frames/
+);
+
+// FILL needs an auto-layout parent whatever the node type
+assert.throws(
+  () => applyLayoutSizing({ type: "TEXT", parent: { layoutMode: "NONE" } }, "FILL"),
+  /auto-layout children/
+);
+assert.throws(() => applyLayoutSizing({ type: "TEXT" }, "FILL"), /auto-layout children/);
+
+// HUG stays limited to frames and text; other types and bad values are refused
+assert.throws(
+  () => applyLayoutSizing({ type: "INSTANCE", layoutMode: "HORIZONTAL" }, "HUG"),
+  /HUG sizing/
+);
+assert.throws(
+  () => applyLayoutSizing({ type: "VECTOR", parent: autoParent }, "FILL"),
+  /does not support layout sizing/
+);
+assert.throws(
+  () => applyLayoutSizing({ type: "TEXT", parent: autoParent }, "STRETCH"),
+  /Invalid layoutSizingHorizontal/
+);
+
+// nothing passed means nothing set
+const untouched = { type: "TEXT", parent: autoParent };
+applyLayoutSizing(untouched);
+assert.equal(untouched.layoutSizingHorizontal, undefined);
 
 console.log("all checks passed");

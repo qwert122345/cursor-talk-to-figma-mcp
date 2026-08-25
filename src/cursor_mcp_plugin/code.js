@@ -235,6 +235,12 @@ async function handleCommand(command, params) {
       return await setAxisAlign(params);
     case "set_layout_sizing":
       return await setLayoutSizing(params);
+    case "set_multiple_layout_sizing":
+      return await setMultipleLayoutSizing(params);
+    case "clone_multiple_nodes":
+      return await cloneMultipleNodes(params);
+    case "rename_multiple_nodes":
+      return await renameMultipleNodes(params);
     case "set_item_spacing":
       return await setItemSpacing(params);
     case "get_reactions":
@@ -3823,90 +3829,235 @@ async function setAxisAlign(params) {
   };
 }
 
-async function setLayoutSizing(params) {
-  const { nodeId, layoutSizingHorizontal, layoutSizingVertical } = params || {};
-
-  // Get the target node
-  const node = await figma.getNodeByIdAsync(nodeId);
-  if (!node) {
-    throw new Error(`Node with ID ${nodeId} not found`);
-  }
-
-  // Check if node is a frame or component that supports layout sizing
-  if (
-    node.type !== "FRAME" &&
-    node.type !== "COMPONENT" &&
-    node.type !== "COMPONENT_SET" &&
-    node.type !== "INSTANCE"
-  ) {
+// E-9: 텍스트 노드도 대상에 포함한다. 오토레이아웃 자식인 TEXT 는
+// layoutSizingHorizontal/Vertical 을 실제로 지원하는데 기존 구현이 막고 있었다.
+function applyLayoutSizing(node, layoutSizingHorizontal, layoutSizingVertical) {
+  const SIZABLE = ["FRAME", "COMPONENT", "COMPONENT_SET", "INSTANCE", "TEXT"];
+  if (!SIZABLE.includes(node.type)) {
     throw new Error(`Node type ${node.type} does not support layout sizing`);
   }
 
-  // Check if the node has auto-layout enabled
-  if (node.layoutMode === "NONE") {
+  // 프레임류는 스스로 오토레이아웃이어야 하고, TEXT 는 부모가 오토레이아웃이면 된다
+  if (node.type !== "TEXT" && node.layoutMode === "NONE") {
     throw new Error(
       "Layout sizing can only be set on auto-layout frames (layoutMode must not be NONE)"
     );
   }
 
-  // Validate and set layoutSizingHorizontal if provided
-  if (layoutSizingHorizontal !== undefined) {
-    if (!["FIXED", "HUG", "FILL"].includes(layoutSizingHorizontal)) {
+  const validate = (value, axis) => {
+    if (!["FIXED", "HUG", "FILL"].includes(value)) {
       throw new Error(
-        "Invalid layoutSizingHorizontal value. Must be one of: FIXED, HUG, FILL"
+        `Invalid layoutSizing${axis} value. Must be one of: FIXED, HUG, FILL`
       );
     }
-    // HUG is only valid on auto-layout frames and text nodes
-    if (
-      layoutSizingHorizontal === "HUG" &&
-      !["FRAME", "TEXT"].includes(node.type)
-    ) {
+    if (value === "HUG" && !["FRAME", "TEXT"].includes(node.type)) {
       throw new Error(
         "HUG sizing is only valid on auto-layout frames and text nodes"
       );
     }
-    // FILL is only valid on auto-layout children
-    if (
-      layoutSizingHorizontal === "FILL" &&
-      (!node.parent || node.parent.layoutMode === "NONE")
-    ) {
+    if (value === "FILL" && (!node.parent || node.parent.layoutMode === "NONE")) {
       throw new Error("FILL sizing is only valid on auto-layout children");
     }
+  };
+
+  if (layoutSizingHorizontal !== undefined) {
+    validate(layoutSizingHorizontal, "Horizontal");
     node.layoutSizingHorizontal = layoutSizingHorizontal;
   }
 
-  // Validate and set layoutSizingVertical if provided
   if (layoutSizingVertical !== undefined) {
-    if (!["FIXED", "HUG", "FILL"].includes(layoutSizingVertical)) {
-      throw new Error(
-        "Invalid layoutSizingVertical value. Must be one of: FIXED, HUG, FILL"
-      );
-    }
-    // HUG is only valid on auto-layout frames and text nodes
-    if (
-      layoutSizingVertical === "HUG" &&
-      !["FRAME", "TEXT"].includes(node.type)
-    ) {
-      throw new Error(
-        "HUG sizing is only valid on auto-layout frames and text nodes"
-      );
-    }
-    // FILL is only valid on auto-layout children
-    if (
-      layoutSizingVertical === "FILL" &&
-      (!node.parent || node.parent.layoutMode === "NONE")
-    ) {
-      throw new Error("FILL sizing is only valid on auto-layout children");
-    }
+    validate(layoutSizingVertical, "Vertical");
     node.layoutSizingVertical = layoutSizingVertical;
   }
 
   return {
     id: node.id,
     name: node.name,
+    type: node.type,
     layoutSizingHorizontal: node.layoutSizingHorizontal,
     layoutSizingVertical: node.layoutSizingVertical,
     layoutMode: node.layoutMode,
+  };
+}
+
+async function setLayoutSizing(params) {
+  const { nodeId, layoutSizingHorizontal, layoutSizingVertical } = params || {};
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node with ID ${nodeId} not found`);
+  }
+
+  return applyLayoutSizing(node, layoutSizingHorizontal, layoutSizingVertical);
+}
+
+// E-9: 한 번에 수백 개 노드의 sizing 을 바꾼다. 단건 호출로는 표 전체를 FILL 로
+// 돌리는 데만 수백 번 왕복이 필요해서 배치를 추가했다.
+async function setMultipleLayoutSizing(params) {
+  const {
+    nodeIds,
+    layoutSizingHorizontal: defaultHorizontal,
+    layoutSizingVertical: defaultVertical,
+  } = params || {};
+
+  // nodeIds + 공통 sizing 으로도, 노드별 items 로도 부를 수 있다
+  const items =
+    params && params.items
+      ? params.items
+      : (nodeIds || []).map((nodeId) => ({ nodeId }));
+
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error("Missing or empty items/nodeIds parameter");
+  }
+
+  const results = [];
+  const errors = [];
+
+  for (const item of items) {
+    try {
+      const node = await figma.getNodeByIdAsync(item.nodeId);
+      if (!node) {
+        throw new Error(`Node with ID ${item.nodeId} not found`);
+      }
+      results.push(
+        applyLayoutSizing(
+          node,
+          item.layoutSizingHorizontal !== undefined
+            ? item.layoutSizingHorizontal
+            : defaultHorizontal,
+          item.layoutSizingVertical !== undefined
+            ? item.layoutSizingVertical
+            : defaultVertical
+        )
+      );
+    } catch (error) {
+      errors.push({ nodeId: item.nodeId, error: error.message });
+    }
+  }
+
+  return {
+    requested: items.length,
+    succeeded: results.length,
+    failed: errors.length,
+    results,
+    errors,
+  };
+}
+
+// E-9: 이름만 바꾸는 왕복도 표 단위로는 수십 번이라 배치를 둔다.
+async function renameMultipleNodes(params) {
+  const { items } = params || {};
+
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    throw new Error("Missing or empty items parameter");
+  }
+
+  const results = [];
+  const errors = [];
+
+  for (const item of items) {
+    try {
+      const node = await figma.getNodeByIdAsync(item.nodeId);
+      if (!node) {
+        throw new Error(`Node not found with ID: ${item.nodeId}`);
+      }
+      const previousName = node.name;
+      node.name = item.name;
+      results.push({ id: node.id, previousName, name: node.name });
+    } catch (error) {
+      errors.push({ nodeId: item.nodeId, error: error.message });
+    }
+  }
+
+  return {
+    requested: items.length,
+    succeeded: results.length,
+    failed: errors.length,
+    results,
+    errors,
+  };
+}
+
+// E-9: 행마다 컬럼을 하나씩 끼워 넣는 것 같은 작업은 clone → set_parent → 텍스트 id 조회로
+// 행당 3회 왕복이 든다. 한 번에 복제·삽입하고 클론 안의 TEXT 목록까지 돌려준다.
+async function cloneMultipleNodes(params) {
+  const { items, includeTexts = true } = params || {};
+
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    throw new Error("Missing or empty items parameter");
+  }
+
+  const collectTexts = (node, out) => {
+    if (node.type === "TEXT") {
+      out.push({ id: node.id, name: node.name, characters: node.characters });
+    }
+    if ("children" in node) {
+      for (const child of node.children) collectTexts(child, out);
+    }
+    return out;
+  };
+
+  const results = [];
+  const errors = [];
+
+  for (const item of items) {
+    try {
+      const node = await figma.getNodeByIdAsync(item.nodeId);
+      if (!node) {
+        throw new Error(`Node not found with ID: ${item.nodeId}`);
+      }
+
+      const clone = node.clone();
+
+      let parent = node.parent;
+      if (item.parentId) {
+        parent = await figma.getNodeByIdAsync(item.parentId);
+        if (!parent) {
+          clone.remove();
+          throw new Error(`Parent node not found with ID: ${item.parentId}`);
+        }
+        if (!("appendChild" in parent)) {
+          clone.remove();
+          throw new Error(
+            `Parent node does not support children: ${item.parentId}`
+          );
+        }
+      }
+
+      if (item.index !== undefined) {
+        parent.insertChild(item.index, clone);
+      } else {
+        parent.appendChild(clone);
+      }
+
+      if (item.x !== undefined && item.y !== undefined && "x" in clone) {
+        clone.x = item.x;
+        clone.y = item.y;
+      }
+
+      if (item.name !== undefined) {
+        clone.name = item.name;
+      }
+
+      results.push({
+        sourceId: item.nodeId,
+        cloneId: clone.id,
+        name: clone.name,
+        parentId: parent.id,
+        index: parent.children.indexOf(clone),
+        texts: includeTexts ? collectTexts(clone, []) : undefined,
+      });
+    } catch (error) {
+      errors.push({ nodeId: item.nodeId, error: error.message });
+    }
+  }
+
+  return {
+    requested: items.length,
+    succeeded: results.length,
+    failed: errors.length,
+    results,
+    errors,
   };
 }
 
