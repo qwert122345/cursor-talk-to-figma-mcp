@@ -130,8 +130,6 @@ async function handleCommand(command, params) {
       return await createFrame(params);
     case "create_text":
       return await createText(params);
-    case "create_table_rows":
-      return await createTableRows(params);
     case "set_fill_color":
       return await setFillColor(params);
     case "set_stroke_color":
@@ -956,165 +954,6 @@ async function createText(params) {
   };
 }
 
-// E-7: build whole table rows in one call. Doing this cell-by-cell over the
-// websocket takes ~17 round trips per row, which is both slow and the failure
-// mode the plugin warns about (dropped socket mid-build).
-async function createTableRows(params) {
-  const {
-    parentId,
-    rowWidth = 1620,
-    fontFamily = "SUIT",
-    fontSize = 12,
-    paddingTop = 10,
-    paddingBottom = 10,
-    paddingLeft = 16,
-    paddingRight = 16,
-    itemSpacing = 12,
-    dividerColor = { r: 0.898, g: 0.91, b: 0.925 },
-    rows = [],
-  } = params || {};
-
-  const parent = await figma.getNodeByIdAsync(parentId);
-  if (!parent) throw new Error("Parent node not found with ID: " + parentId);
-  if (!("appendChild" in parent))
-    throw new Error("Parent node does not support children: " + parentId);
-
-  // Preload every (family, style) pair up front. loadFontAsync per text node is
-  // what makes the cell-by-cell approach slow.
-  const wantedStyles = new Set(["Regular", "Medium"]);
-  rows.forEach((row) => {
-    (row.cells || []).forEach((cell) => wantedStyles.add(cell.style || "Regular"));
-    if (row.result) wantedStyles.add(row.result.style || "Regular");
-  });
-  let family = fontFamily;
-  const loaded = {};
-  const fontFallbacks = [];
-  for (const style of wantedStyles) {
-    try {
-      await figma.loadFontAsync({ family: family, style: style });
-      loaded[style] = { family: family, style: style };
-    } catch (e) {
-      const fb = { family: "Inter", style: style === "ExtraBold" ? "Extra Bold" : style };
-      try {
-        await figma.loadFontAsync(fb);
-        loaded[style] = fb;
-      } catch (e2) {
-        const last = { family: "Inter", style: "Regular" };
-        await figma.loadFontAsync(last);
-        loaded[style] = last;
-      }
-      fontFallbacks.push(family + " " + style + " -> " + loaded[style].family + " " + loaded[style].style);
-    }
-  }
-
-  // Fonts are already preloaded above, so assign `characters` directly instead
-  // of going through setCharacters(), which awaits loadFontAsync on every call.
-  // That await-per-cell is what made a 7-cell row take seconds.
-  const makeText = (spec) => {
-    const node = figma.createText();
-    const style = spec.style || "Regular";
-    node.fontName = loaded[style] || loaded["Regular"];
-    node.fontSize = spec.size || fontSize;
-    node.name = spec.name || "Cell_Text";
-    if (spec.color) {
-      node.fills = [
-        {
-          type: "SOLID",
-          color: { r: spec.color.r, g: spec.color.g, b: spec.color.b },
-          opacity: spec.color.a === undefined ? 1 : spec.color.a,
-        },
-      ];
-    }
-    node.characters = spec.text === undefined ? "" : String(spec.text);
-    if (typeof spec.width === "number" && spec.width > 0) {
-      node.textAutoResize = "HEIGHT";
-      node.resize(spec.width, node.height);
-    }
-    return node;
-  };
-
-  const created = [];
-  for (const row of rows) {
-    const rowFrame = figma.createFrame();
-    rowFrame.name = row.name || "Row";
-    rowFrame.layoutMode = "HORIZONTAL";
-    rowFrame.primaryAxisSizingMode = "FIXED";
-    rowFrame.counterAxisSizingMode = "AUTO";
-    rowFrame.counterAxisAlignItems = "MIN";
-    rowFrame.paddingTop = paddingTop;
-    rowFrame.paddingBottom = paddingBottom;
-    rowFrame.paddingLeft = paddingLeft;
-    rowFrame.paddingRight = paddingRight;
-    rowFrame.itemSpacing = itemSpacing;
-    rowFrame.resize(rowWidth, rowFrame.height);
-    if (row.fill) {
-      rowFrame.fills = [
-        {
-          type: "SOLID",
-          color: { r: row.fill.r, g: row.fill.g, b: row.fill.b },
-          opacity: row.fill.a === undefined ? 1 : row.fill.a,
-        },
-      ];
-    } else {
-      rowFrame.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
-    }
-    parent.appendChild(rowFrame);
-
-    for (const cell of row.cells || []) {
-      rowFrame.appendChild(makeText(cell));
-    }
-
-    if (row.result) {
-      const res = row.result;
-      const resFrame = figma.createFrame();
-      resFrame.name = res.name || "Result";
-      resFrame.layoutMode = "HORIZONTAL";
-      resFrame.primaryAxisSizingMode = "FIXED";
-      resFrame.counterAxisSizingMode = "AUTO";
-      resFrame.counterAxisAlignItems = "MIN";
-      resFrame.itemSpacing = 8;
-      resFrame.fills = [];
-      resFrame.resize(res.width || 150, resFrame.height);
-      rowFrame.appendChild(resFrame);
-      if (res.checkbox) {
-        const box = figma.createRectangle();
-        box.name = "Checkbox_Empty";
-        box.resize(20, 20);
-        box.cornerRadius = 4;
-        box.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
-        box.strokes = [{ type: "SOLID", color: { r: 0.776, g: 0.788, b: 0.812 } }];
-        box.strokeWeight = 1;
-        resFrame.appendChild(box);
-      }
-      resFrame.appendChild(
-        makeText({
-          name: res.textName || "Status_Empty",
-          text: res.text === undefined ? "" : res.text,
-          style: res.style || "Regular",
-          size: res.size || fontSize,
-          width: (res.width || 150) - (res.checkbox ? 28 : 0),
-        })
-      );
-    }
-
-    created.push({ id: rowFrame.id, name: rowFrame.name });
-
-    if (row.divider !== false) {
-      const line = figma.createRectangle();
-      line.name = "Divider_Row";
-      line.resize(rowWidth, 1);
-      line.fills = [{ type: "SOLID", color: dividerColor }];
-      parent.appendChild(line);
-    }
-  }
-
-  return {
-    parentId: parentId,
-    rowCount: created.length,
-    rows: created,
-    fontFallbacks: fontFallbacks,
-  };
-}
 
 async function setFillColor(params) {
   console.log("setFillColor", params);
@@ -4627,6 +4466,28 @@ function pageNameOf(node) {
 // Nearest component-ish ancestor, reported as { component, variant }.
 // A variant gives both ("Button" + "Size=Large, State=Pressed") so a problem
 // isolated to one variant stays visible instead of collapsing into the set.
+// Scan scope, shared by the page-walking commands: a nodeId means just that
+// subtree, otherwise every page minus excludePages. documentAccess is
+// dynamic-page, so without loadAllPagesAsync the other pages scan as empty.
+async function resolveScanTargets(params) {
+  if (params.nodeId) {
+    var root = await figma.getNodeByIdAsync(params.nodeId);
+    if (!root) throw new Error("Node not found with ID: " + params.nodeId);
+    return [{ pageName: pageNameOf(root), node: root }];
+  }
+  await figma.loadAllPagesAsync();
+  var exclude = params.excludePages || [];
+  return figma.root.children
+    .filter(function (p) {
+      return (
+        (!params.pageName || p.name === params.pageName) && exclude.indexOf(p.name) === -1
+      );
+    })
+    .map(function (p) {
+      return { pageName: p.name, node: p };
+    });
+}
+
 function nearestComponent(node) {
   var p = node.parent;
   while (p && p.type !== "PAGE" && p.type !== "DOCUMENT") {
@@ -4790,28 +4651,27 @@ function hardcodedProps(node) {
   return out;
 }
 
+// E-8: bound-variable consumers — the inverse of the hardcoded scan.
+// "Which nodes use Semantic/Color / Interactive/Regular, and on what property"
+// has no Figma API of its own, so it rides along on the same node walk.
+// boundVariables values are VariableAlias or VariableAlias[]; concat covers both.
+function collectBoundVars(node, out) {
+  var bound = node.boundVariables || {};
+  Object.keys(bound).forEach(function (prop) {
+    [].concat(bound[prop]).forEach(function (a) {
+      if (a && a.type === "VARIABLE_ALIAS") out.push({ prop: prop, id: a.id });
+    });
+  });
+}
+
 async function getVariableBindings(params) {
   params = params || {};
   var commandId = params.commandId || generateCommandId();
   var detail = params.detail !== false;
   var limit = params.limit || 500;
   var offset = params.offset || 0;
-  var exclude = params.excludePages || [];
 
-  var targets = [];
-  if (params.nodeId) {
-    var root = await figma.getNodeByIdAsync(params.nodeId);
-    if (!root) throw new Error("Node not found with ID: " + params.nodeId);
-    targets.push({ pageName: pageNameOf(root), node: root });
-  } else {
-    // documentAccess is dynamic-page: without this, other pages scan as empty.
-    await figma.loadAllPagesAsync();
-    figma.root.children.forEach(function (p) {
-      if (params.pageName && p.name !== params.pageName) return;
-      if (exclude.indexOf(p.name) !== -1) return;
-      targets.push({ pageName: p.name, node: p });
-    });
-  }
+  var targets = await resolveScanTargets(params);
 
   await sendProgressUpdate(
     commandId,
@@ -4828,6 +4688,7 @@ async function getVariableBindings(params) {
   var byProperty = {};
   var byValue = {};
   var byComponent = {};
+  var byVariable = {};
   var scannedNodes = 0;
 
   for (var i = 0; i < targets.length; i++) {
@@ -4843,6 +4704,27 @@ async function getVariableBindings(params) {
 
     for (var j = 0; j < nodes.length; j++) {
       scannedNodes++;
+
+      var boundHits = [];
+      collectBoundVars(nodes[j], boundHits);
+      if (boundHits.length) {
+        var boundOwner = nearestComponent(nodes[j]);
+        var boundOwnerKey = boundOwner.component || "(no component)";
+        boundHits.forEach(function (h) {
+          var vb2 =
+            byVariable[h.id] ||
+            (byVariable[h.id] = { total: 0, properties: {}, components: {} });
+          vb2.total++;
+          vb2.properties[h.prop] = (vb2.properties[h.prop] || 0) + 1;
+          var cb =
+            vb2.components[boundOwnerKey] ||
+            (vb2.components[boundOwnerKey] = { total: 0, variants: {} });
+          cb.total++;
+          if (boundOwner.variant)
+            cb.variants[boundOwner.variant] = (cb.variants[boundOwner.variant] || 0) + 1;
+        });
+      }
+
       var props = hardcodedProps(nodes[j]);
       if (!props.length) continue;
       var propNames = [];
@@ -4886,6 +4768,27 @@ async function getVariableBindings(params) {
     );
   }
 
+  // Resolve variable ids to "Collection / Name" once per distinct id.
+  var byVariableNamed = {};
+  var collNameById = {};
+  var varIds = Object.keys(byVariable);
+  for (var v = 0; v < varIds.length; v++) {
+    var label = varIds[v];
+    var variable = await figma.variables.getVariableByIdAsync(varIds[v]);
+    if (variable) {
+      var cname = collNameById[variable.variableCollectionId];
+      if (cname === undefined) {
+        var coll = await figma.variables.getVariableCollectionByIdAsync(
+          variable.variableCollectionId
+        );
+        cname = coll ? coll.name : "(unknown collection)";
+        collNameById[variable.variableCollectionId] = cname;
+      }
+      label = cname + " / " + variable.name;
+    }
+    byVariableNamed[label] = byVariable[varIds[v]];
+  }
+
   var page = detail ? findings.slice(offset, offset + limit) : [];
   return {
     scannedNodes: scannedNodes,
@@ -4893,6 +4796,7 @@ async function getVariableBindings(params) {
     byProperty: byProperty,
     byValue: byValue,
     byComponent: byComponent,
+    byVariable: byVariableNamed,
     offset: offset,
     limit: limit,
     returned: page.length,
@@ -5137,21 +5041,8 @@ async function detachInstances(params) {
 async function getHyperlinks(params) {
   params = params || {};
   var commandId = params.commandId || generateCommandId();
-  var exclude = params.excludePages || [];
 
-  var targets = [];
-  if (params.nodeId) {
-    var root = await figma.getNodeByIdAsync(params.nodeId);
-    if (!root) throw new Error("Node not found with ID: " + params.nodeId);
-    targets.push({ pageName: pageNameOf(root), node: root });
-  } else {
-    await figma.loadAllPagesAsync();
-    figma.root.children.forEach(function (p) {
-      if (params.pageName && p.name !== params.pageName) return;
-      if (exclude.indexOf(p.name) !== -1) return;
-      targets.push({ pageName: p.name, node: p });
-    });
-  }
+  var targets = await resolveScanTargets(params);
 
   var links = [];
   var textNodes = 0;
@@ -5223,7 +5114,7 @@ async function getHyperlinks(params) {
 // exportAsync(JSON_REST_V1) drops all of these, so read them off live nodes.
 function safeGet(node, key) {
   try {
-    return key in node ? node[key] : undefined;
+    return node[key];
   } catch (e) {
     return undefined;
   }
@@ -5232,21 +5123,8 @@ function safeGet(node, key) {
 async function getLayoutAudit(params) {
   params = params || {};
   var commandId = params.commandId || generateCommandId();
-  var exclude = params.excludePages || [];
 
-  var targets = [];
-  if (params.nodeId) {
-    var root = await figma.getNodeByIdAsync(params.nodeId);
-    if (!root) throw new Error("Node not found with ID: " + params.nodeId);
-    targets.push({ pageName: pageNameOf(root), node: root });
-  } else {
-    await figma.loadAllPagesAsync();
-    figma.root.children.forEach(function (p) {
-      if (params.pageName && p.name !== params.pageName) return;
-      if (exclude.indexOf(p.name) !== -1) return;
-      targets.push({ pageName: p.name, node: p });
-    });
-  }
+  var targets = await resolveScanTargets(params);
 
   await sendProgressUpdate(
     commandId,

@@ -19,7 +19,8 @@ const ctx = createContext({
   },
 });
 runInContext(readFileSync("src/cursor_mcp_plugin/code.js", "utf8"), ctx);
-const { hardcodedProps, nearestComponent, paintsToValue, ancestorPath } = ctx;
+const { hardcodedProps, nearestComponent, paintsToValue, ancestorPath, collectBoundVars,
+        resolveScanTargets, safeGet } = ctx;
 
 const solid = [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }];
 
@@ -104,5 +105,71 @@ const deep = Array.from({ length: 20 }).reduce(
   page
 );
 assert.equal(ancestorPath({ parent: deep }, 3).split(" > ").length, 3);
+
+// collectBoundVars: both boundVariables shapes Figma emits — a bare alias
+// (fontSize) and an alias-per-paint array (fills) — plus unbound paints.
+const alias = (id) => ({ type: "VARIABLE_ALIAS", id });
+const hits = [];
+collectBoundVars(
+  {
+    boundVariables: {
+      fontSize: alias("V:1"),
+      fills: [alias("V:2"), undefined],
+      strokes: [],
+    },
+  },
+  hits
+);
+assert.deepEqual(hits, [
+  { prop: "fontSize", id: "V:1" },
+  { prop: "fills", id: "V:2" },
+]);
+// a node with nothing bound contributes nothing, and must not throw
+const none = [];
+collectBoundVars({}, none);
+assert.deepEqual(none, []);
+
+// resolveScanTargets: the scan-scope rules the page-walking commands share.
+// nodeId wins; otherwise pageName narrows and excludePages removes.
+const pages = ["Cover", "Check", "Color"].map((name) => ({ type: "PAGE", name }));
+ctx.figma.root = { children: pages };
+ctx.figma.loadAllPagesAsync = async () => {};
+ctx.figma.getNodeByIdAsync = async (id) =>
+  id === "1:1" ? { id, name: "Frame", parent: pages[2] } : null;
+
+assert.deepEqual(
+  (await resolveScanTargets({})).map((t) => t.pageName),
+  ["Cover", "Check", "Color"]
+);
+assert.deepEqual(
+  (await resolveScanTargets({ excludePages: ["Check"] })).map((t) => t.pageName),
+  ["Cover", "Color"]
+);
+assert.deepEqual(
+  (await resolveScanTargets({ pageName: "Color" })).map((t) => t.pageName),
+  ["Color"]
+);
+// pageName and excludePages both apply — naming an excluded page yields nothing
+assert.deepEqual(await resolveScanTargets({ pageName: "Check", excludePages: ["Check"] }), []);
+// a nodeId scopes to that subtree and reports the page it lives on
+const scoped = await resolveScanTargets({ nodeId: "1:1", pageName: "Cover" });
+assert.equal(scoped.length, 1);
+assert.equal(scoped[0].pageName, "Color");
+await assert.rejects(() => resolveScanTargets({ nodeId: "nope" }), /Node not found/);
+
+// safeGet: a property that throws reads as undefined rather than blowing up the scan
+assert.equal(safeGet({ layoutMode: "NONE" }, "layoutMode"), "NONE");
+assert.equal(safeGet({}, "layoutMode"), undefined);
+assert.equal(
+  safeGet(
+    {
+      get boom() {
+        throw new Error("unsupported on this node type");
+      },
+    },
+    "boom"
+  ),
+  undefined
+);
 
 console.log("all checks passed");
