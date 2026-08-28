@@ -997,6 +997,38 @@ server.tool(
   }
 );
 
+// Get Grid Usage Tool
+server.tool(
+  "get_grid_usage",
+  "Report which nodes consume each local grid style, with per-page counts and a node sample. Reverse lookup via style.consumers, so no full document walk. This is the only way to tell whether a grid style is actually applied: get_node_info and get_layout_audit never return gridStyleId or layoutGrids.",
+  {
+    sample: z.number().optional().describe("Max consumer nodes listed per style (default 20); counts are always complete"),
+  },
+  async ({ sample }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_grid_usage", { sample });
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting grid usage: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Get Local Components Tool
 server.tool(
   "get_local_components",
@@ -3162,6 +3194,7 @@ type FigmaCommand =
   | "delete_node"
   | "delete_multiple_nodes"
   | "get_styles"
+  | "get_grid_usage"
   | "get_local_components"
   | "get_local_variables"
   | "get_variable_bindings"

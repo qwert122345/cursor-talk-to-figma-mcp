@@ -144,6 +144,8 @@ async function handleCommand(command, params) {
       return await deleteMultipleNodes(params);
     case "get_styles":
       return await getStyles();
+    case "get_grid_usage":
+      return await getGridUsage(params);
     case "get_local_components":
       return await getLocalComponents(params);
     case "get_local_variables":
@@ -1410,6 +1412,45 @@ async function getStyles() {
       key: style.key,
     })),
   };
+}
+
+// E-15: 그리드 스타일이 실제로 쓰이는지 역조회한다 (C3_06).
+// gridStyleId·layoutGrids 를 주는 커맨드가 없어 이 항목은 측정 자체가 불가능했다.
+// style.consumers 가 피그마가 주는 유일한 역인덱스라 전수 순회 없이 끝난다.
+// dynamic-page 라 loadAllPagesAsync 없이는 다른 페이지 소비자가 통째로 빠진다.
+async function getGridUsage(params) {
+  params = params || {};
+  var sample = typeof params.sample === "number" ? params.sample : 20;
+
+  await figma.loadAllPagesAsync();
+  var styles = await figma.getLocalGridStylesAsync();
+
+  var out = [];
+  for (var s = 0; s < styles.length; s++) {
+    var style = styles[s];
+    // style.consumers 는 dynamic-page 에서 던진다 — 비동기 쪽만 쓸 수 있다.
+    var consumers = await style.getStyleConsumersAsync();
+    var byPage = {};
+    var nodes = [];
+    for (var i = 0; i < consumers.length; i++) {
+      var node = consumers[i].node;
+      var page = pageNameOf(node) || "(unknown)";
+      byPage[page] = (byPage[page] || 0) + 1;
+      if (nodes.length < sample) {
+        nodes.push({ id: node.id, name: node.name, type: node.type, page: page });
+      }
+    }
+    out.push({
+      id: style.id,
+      name: style.name,
+      key: style.key,
+      count: consumers.length,
+      byPage: byPage,
+      nodes: nodes,
+    });
+  }
+
+  return { total: styles.length, styles: out };
 }
 
 async function getLocalComponents(params) {

@@ -789,6 +789,35 @@ server.tool(
   }
 );
 server.tool(
+  "get_grid_usage",
+  "Report which nodes consume each local grid style, with per-page counts and a node sample. Reverse lookup via style.consumers, so no full document walk. This is the only way to tell whether a grid style is actually applied: get_node_info and get_layout_audit never return gridStyleId or layoutGrids.",
+  {
+    sample: z.number().optional().describe("Max consumer nodes listed per style (default 20); counts are always complete")
+  },
+  async ({ sample }) => {
+    try {
+      const result = await sendCommandToFigma("get_grid_usage", { sample });
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting grid usage: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "get_local_components",
   "Get all local components and component sets, with name, type, key, description, documentationLinks, page, parent and variant properties. Pass checkPublished to also report whether each top-level component is actually published to a team library (one network round trip per component, so it is slow).",
   {
