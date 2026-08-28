@@ -1005,6 +1005,68 @@ server.tool(
   }
 );
 server.tool(
+  "set_multiple_opacity",
+  "Set opacity on many nodes at once (0-1). Returns previousOpacity per node so the change can be undone.",
+  {
+    nodeIds: z.array(z.string()).describe("Nodes to change"),
+    opacity: z.number().min(0).max(1).describe("Opacity 0-1, e.g. 0.3 for 30%")
+  },
+  async ({ nodeIds, opacity }) => {
+    try {
+      const result = await sendCommandToFigma("set_multiple_opacity", { nodeIds, opacity }, 6e4);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting opacity: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "find_hidden_nodes",
+  `Find nodes that exist in the file but are not visible on canvas, with the reason for each: hidden (visible=false), parentHidden (an ancestor is toggled off), transparent (opacity 0), faded (opacity below 1, only with includeFaded), zeroSize, clipped (fully outside a clipsContent ancestor) or clippedPartly. get_node_info does not return visible/opacity/clipsContent, so this is the only way to answer "why can't I see it". Scope with nodeId or pageName, skip pages with excludePages, and narrow with nameFilter (substring, case-insensitive).`,
+  {
+    nodeId: z.string().optional().describe("Limit the scan to this node and its children"),
+    pageName: z.string().optional().describe("Limit the scan to a single page by name"),
+    excludePages: z.array(z.string()).optional().describe("Page names to skip"),
+    nameFilter: z.string().optional().describe('Only report nodes whose name contains this (case-insensitive), e.g. ".Slot"'),
+    includeFaded: z.boolean().optional().describe('Also report nodes with opacity below 1 as reason "faded" (detail.opacity holds the value). Off by default because intentionally translucent nodes are common; turn it on to read opacity, which no other command returns.'),
+    limit: z.number().optional().describe("Max findings to return (default 500)"),
+    offset: z.number().optional().describe("Findings to skip, for paging")
+  },
+  async ({ nodeId, pageName, excludePages, nameFilter, includeFaded, limit, offset }) => {
+    try {
+      const result = await sendCommandToFigma(
+        "find_hidden_nodes",
+        { nodeId, pageName, excludePages, nameFilter, includeFaded, limit, offset },
+        12e4
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error finding hidden nodes: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "get_instance_census",
   "Count instances per main component across the current file, split into library (design system) and local components. Run it on a product file to measure design system usage. Pass instancesFor (component key/id/name) to also get where those instances are - id, page and ancestor path - which is the only way to locate instances whose layer name is the slot name rather than the component name.",
   {

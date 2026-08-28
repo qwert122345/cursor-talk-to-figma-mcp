@@ -154,6 +154,10 @@ async function handleCommand(command, params) {
       return await getInstanceCensus(params);
     case "get_layout_audit":
       return await getLayoutAudit(params);
+    case "find_hidden_nodes":
+      return await findHiddenNodes(params);
+    case "set_multiple_opacity":
+      return await setMultipleOpacity(params);
     case "get_hyperlinks":
       return await getHyperlinks(params);
     case "detach_instances":
@@ -347,6 +351,11 @@ function filterFigmaNode(node) {
     name: node.name,
     type: node.type,
   };
+
+  // E-11: 기본값이 아닐 때만 싣는다. get_node_info 가 이걸 안 줘서
+  // "왜 화면에 안 보이는가"를 도구로 확인할 방법이 아예 없었다.
+  if (node.visible === false) filtered.visible = false;
+  if (typeof node.opacity === "number" && node.opacity < 1) filtered.opacity = node.opacity;
 
   if (node.fills && node.fills.length > 0) {
     filtered.fills = node.fills.map((fill) => {
@@ -4815,6 +4824,201 @@ function collectBoundVars(node, out) {
   });
 }
 
+// E-12: 여러 노드의 불투명도를 한 번에. 점검표에서 "끝난 행을 흐리게" 처럼
+// 상태를 시각적으로 죽이는 용도라 단건 커맨드로는 왕복이 너무 많다.
+async function setMultipleOpacity(params) {
+  params = params || {};
+  var nodeIds = params.nodeIds || [];
+  var opacity = params.opacity;
+  if (!nodeIds.length) throw new Error("nodeIds is required");
+  if (typeof opacity !== "number" || opacity < 0 || opacity > 1)
+    throw new Error("opacity must be a number between 0 and 1");
+
+  var results = [];
+  var errors = [];
+  for (var i = 0; i < nodeIds.length; i++) {
+    try {
+      var node = await figma.getNodeByIdAsync(nodeIds[i]);
+      if (!node) throw new Error("Node not found");
+      if (!("opacity" in node)) throw new Error(node.type + " has no opacity");
+      var before = node.opacity;
+      node.opacity = opacity;
+      results.push({
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        previousOpacity: before,
+        opacity: node.opacity,
+      });
+    } catch (e) {
+      errors.push({ id: nodeIds[i], error: String(e && e.message ? e.message : e) });
+    }
+  }
+  return {
+    requested: nodeIds.length,
+    succeeded: results.length,
+    failed: errors.length,
+    results: results,
+    errors: errors,
+  };
+}
+
+// E-11: "분명히 있다는데 화면에서 못 찾겠다" 를 푸는 스캔.
+// 노드가 안 보이는 이유는 눈 아이콘만이 아니다 — 부모가 꺼졌거나, 투명하거나,
+// 크기가 0이거나, 부모의 clipsContent 에 잘려 나갔거나다. 이유를 함께 돌려준다.
+async function findHiddenNodes(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  var limit = params.limit || 500;
+  var offset = params.offset || 0;
+  var nameFilter = params.nameFilter ? String(params.nameFilter).toLowerCase() : null;
+  // E-12: opacity 가 1 미만인 노드도 "faded" 로 잡는다. 기본은 꺼둔다 —
+  // 30% 딱지·강조 배경처럼 의도적으로 반투명한 노드가 많아 기존 결과가 오염된다.
+  var includeFaded = params.includeFaded === true;
+
+  var targets = await resolveScanTargets(params);
+
+  await sendProgressUpdate(
+    commandId,
+    "find_hidden_nodes",
+    "started",
+    0,
+    targets.length,
+    0,
+    "Scanning " + targets.length + " target(s) for invisible nodes...",
+    null
+  );
+
+  function rectOf(n) {
+    var b = safeGet(n, "absoluteBoundingBox");
+    if (b && typeof b.x === "number") return b;
+    return null;
+  }
+
+  // 부모 중 clipsContent 인 것들의 사각형과 비교해 완전히 벗어났는지 본다.
+  function clippedBy(node) {
+    var r = rectOf(node);
+    if (!r) return null;
+    var p = node.parent;
+    while (p && p.type !== "PAGE" && p.type !== "DOCUMENT") {
+      if (safeGet(p, "clipsContent") === true) {
+        var pr = rectOf(p);
+        if (pr) {
+          var outside =
+            r.x >= pr.x + pr.width ||
+            r.y >= pr.y + pr.height ||
+            r.x + r.width <= pr.x ||
+            r.y + r.height <= pr.y;
+          var partial =
+            !outside &&
+            (r.x < pr.x ||
+              r.y < pr.y ||
+              r.x + r.width > pr.x + pr.width ||
+              r.y + r.height > pr.y + pr.height);
+          if (outside) return { id: p.id, name: p.name, mode: "fully" };
+          if (partial) return { id: p.id, name: p.name, mode: "partly" };
+        }
+      }
+      p = p.parent;
+    }
+    return null;
+  }
+
+  var findings = [];
+  var byReason = {};
+  var scannedNodes = 0;
+
+  for (var i = 0; i < targets.length; i++) {
+    var target = targets[i];
+    if (target.node.type === "PAGE") await target.node.loadAsync();
+
+    var nodes = target.node.findAll
+      ? target.node.findAll(function () {
+          return true;
+        })
+      : [];
+    if (target.node.type !== "PAGE") nodes = [target.node].concat(nodes);
+
+    for (var j = 0; j < nodes.length; j++) {
+      var node = nodes[j];
+      scannedNodes++;
+      if (nameFilter && String(node.name).toLowerCase().indexOf(nameFilter) === -1)
+        continue;
+
+      var reasons = [];
+      var detail = {};
+
+      if (safeGet(node, "visible") === false) reasons.push("hidden");
+
+      var op = safeGet(node, "opacity");
+      if (typeof op === "number" && op < 1) {
+        detail.opacity = op;
+        if (op === 0) reasons.push("transparent");
+        else if (includeFaded) reasons.push("faded");
+      }
+
+      var r = rectOf(node);
+      if (r && (r.width === 0 || r.height === 0)) reasons.push("zeroSize");
+
+      // 조상 중 꺼진 것이 있는가 (자기는 켜져 있어도 화면엔 안 나온다)
+      var anc = node.parent;
+      while (anc && anc.type !== "PAGE" && anc.type !== "DOCUMENT") {
+        if (safeGet(anc, "visible") === false) {
+          reasons.push("parentHidden");
+          detail.hiddenAncestor = { id: anc.id, name: anc.name };
+          break;
+        }
+        anc = anc.parent;
+      }
+
+      var clip = clippedBy(node);
+      if (clip) {
+        reasons.push(clip.mode === "fully" ? "clipped" : "clippedPartly");
+        detail.clippedBy = clip;
+      }
+
+      if (!reasons.length) continue;
+
+      reasons.forEach(function (rs) {
+        byReason[rs] = (byReason[rs] || 0) + 1;
+      });
+
+      findings.push({
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        page: target.pageName,
+        path: ancestorPath(node),
+        reasons: reasons,
+        detail: detail,
+      });
+    }
+  }
+
+  await sendProgressUpdate(
+    commandId,
+    "find_hidden_nodes",
+    "completed",
+    100,
+    1,
+    1,
+    "Found " + findings.length + " invisible node(s)",
+    null
+  );
+
+  return {
+    scannedNodes: scannedNodes,
+    totalFindings: findings.length,
+    byReason: byReason,
+    nameFilter: params.nameFilter || null,
+    offset: offset,
+    limit: limit,
+    returned: Math.min(limit, Math.max(0, findings.length - offset)),
+    hasMore: offset + limit < findings.length,
+    findings: findings.slice(offset, offset + limit),
+  };
+}
+
 async function getVariableBindings(params) {
   params = params || {};
   var commandId = params.commandId || generateCommandId();
@@ -4841,6 +5045,11 @@ async function getVariableBindings(params) {
   var byComponent = {};
   var byVariable = {};
   var scannedNodes = 0;
+  // E-10: which text styles are actually bound, not just which values look alike.
+  // Figma has no "where is this style used" API and get_node_info drops
+  // textStyleId, so it rides along on the scan that already walks every node.
+  var byTextStyleId = {};
+  var textStat = { total: 0, styled: 0, unstyled: 0, mixed: 0 };
 
   for (var i = 0; i < targets.length; i++) {
     var target = targets[i];
@@ -4855,6 +5064,19 @@ async function getVariableBindings(params) {
 
     for (var j = 0; j < nodes.length; j++) {
       scannedNodes++;
+
+      if (nodes[j].type === "TEXT") {
+        textStat.total++;
+        var tsid = safeGet(nodes[j], "textStyleId");
+        if (typeof tsid === "string" && tsid) {
+          textStat.styled++;
+          byTextStyleId[tsid] = (byTextStyleId[tsid] || 0) + 1;
+        } else if (tsid === figma.mixed) {
+          textStat.mixed++;
+        } else {
+          textStat.unstyled++;
+        }
+      }
 
       var boundHits = [];
       collectBoundVars(nodes[j], boundHits);
@@ -4940,9 +5162,26 @@ async function getVariableBindings(params) {
     byVariableNamed[label] = byVariable[varIds[v]];
   }
 
+  var byTextStyle = {};
+  var tsIds = Object.keys(byTextStyleId);
+  for (var t = 0; t < tsIds.length; t++) {
+    var st = null;
+    try {
+      st = await figma.getStyleByIdAsync(tsIds[t]);
+    } catch (e) {
+      st = null;
+    }
+    var tlabel = st
+      ? st.name + (st.remote ? " (library)" : " (local)")
+      : "(unresolved " + tsIds[t] + ")";
+    byTextStyle[tlabel] = (byTextStyle[tlabel] || 0) + byTextStyleId[tsIds[t]];
+  }
+
   var page = detail ? findings.slice(offset, offset + limit) : [];
   return {
     scannedNodes: scannedNodes,
+    byTextStyle: byTextStyle,
+    textNodes: textStat,
     totalFindings: findings.length,
     byProperty: byProperty,
     byValue: byValue,
