@@ -260,6 +260,8 @@ async function handleCommand(command, params) {
       return await setFocus(params);
     case "set_selections":
       return await setSelections(params);
+    case "select_hardcoded":
+      return await selectHardcoded(params);
     case "set_image_fill":
       return await setImageFill(params);
     case "rename_node":
@@ -4578,23 +4580,120 @@ async function setSelections(params) {
     throw new Error(`No valid nodes found for the provided IDs: ${params.nodeIds.join(', ')}`);
   }
 
-  // Set selection to the nodes
-  figma.currentPage.selection = nodes;
-  
-  // Scroll and zoom to show all nodes in viewport
-  figma.viewport.scrollAndZoomIntoView(nodes);
-
-  const selectedNodes = nodes.map(node => ({
-    name: node.name,
-    id: node.id
-  }));
+  // E-14: selection is per page. Without switching first, any node that lives on
+  // another page throws and the whole call fails - which is exactly the case when
+  // a scan hands back hits from 22 component pages.
+  const result = await selectOnOwnPage(nodes);
 
   return {
     success: true,
-    count: nodes.length,
-    selectedNodes: selectedNodes,
+    count: result.selected.length,
+    selectedNodes: result.selected.map(node => ({ name: node.name, id: node.id })),
     notFoundIds: notFoundIds,
-    message: `Selected ${nodes.length} nodes${notFoundIds.length > 0 ? ` (${notFoundIds.length} not found)` : ''}`
+    page: result.pageName,
+    skippedOtherPages: result.skipped.length,
+    skippedIds: result.skipped.map(node => node.id),
+    message: `Selected ${result.selected.length} nodes on "${result.pageName}"` +
+      (result.skipped.length > 0 ? ` (${result.skipped.length} on other pages, not selected)` : '') +
+      (notFoundIds.length > 0 ? ` (${notFoundIds.length} not found)` : '')
+  };
+}
+
+function pageOfNode(node) {
+  var p = node;
+  while (p && p.type !== "PAGE") p = p.parent;
+  return p;
+}
+
+// Switches to the page of the first node, selects everything that lives there,
+// and reports the rest instead of throwing. Figma has one selection per page.
+async function selectOnOwnPage(nodes) {
+  var page = null;
+  for (var i = 0; i < nodes.length && !page; i++) page = pageOfNode(nodes[i]);
+  if (!page) throw new Error("None of the nodes are on a page");
+
+  if (figma.currentPage.id !== page.id) await figma.setCurrentPageAsync(page);
+
+  var selected = [];
+  var skipped = [];
+  for (var j = 0; j < nodes.length; j++) {
+    var owner = pageOfNode(nodes[j]);
+    if (owner && owner.id === page.id) selected.push(nodes[j]);
+    else skipped.push(nodes[j]);
+  }
+
+  figma.currentPage.selection = selected;
+  if (selected.length) figma.viewport.scrollAndZoomIntoView(selected);
+
+  return { pageName: page.name, selected: selected, skipped: skipped };
+}
+
+// E-14: find nodes whose PROPERTY is hardcoded (optionally to a given VALUE) and
+// select them, so a human can review them in the file. get_variable_bindings can
+// already report them, but shipping 500-finding JSON back just to pick 12 node ids
+// is the slow way round. Scope with pageName/nodeId, page through with offset/limit.
+async function selectHardcoded(params) {
+  params = params || {};
+  if (!params.property) throw new Error("Missing property parameter");
+  var wanted = params.value === undefined || params.value === null ? null : String(params.value);
+
+  var targets = await resolveScanTargets(params);
+  var hits = [];
+  var scannedNodes = 0;
+
+  for (var i = 0; i < targets.length; i++) {
+    var target = targets[i];
+    if (target.node.type === "PAGE") await target.node.loadAsync();
+    var nodes = target.node.findAll ? target.node.findAll(function () { return true; }) : [];
+    if (target.node.type !== "PAGE") nodes = [target.node].concat(nodes);
+
+    for (var j = 0; j < nodes.length; j++) {
+      scannedNodes++;
+      var found = hardcodedProps(nodes[j]);
+      for (var k = 0; k < found.length; k++) {
+        if (found[k].prop !== params.property) continue;
+        if (wanted !== null && String(found[k].value) !== wanted) continue;
+        hits.push({ node: nodes[j], value: found[k].value, page: target.pageName });
+      }
+    }
+  }
+
+  var offset = params.offset || 0;
+  var limit = params.limit || 50;
+  var slice = hits.slice(offset, offset + limit);
+
+  var result = { pageName: null, selected: [], skipped: [] };
+  if (slice.length) {
+    result = await selectOnOwnPage(slice.map(function (h) { return h.node; }));
+  }
+
+  var selectedIds = {};
+  result.selected.forEach(function (n) { selectedIds[n.id] = true; });
+
+  return {
+    property: params.property,
+    value: wanted,
+    scannedNodes: scannedNodes,
+    total: hits.length,
+    offset: offset,
+    limit: limit,
+    returned: slice.length,
+    hasMore: offset + slice.length < hits.length,
+    page: result.pageName,
+    selectedCount: result.selected.length,
+    skippedOtherPages: result.skipped.length,
+    nodes: slice.map(function (h) {
+      return {
+        id: h.node.id,
+        name: h.node.name,
+        type: h.node.type,
+        page: h.page,
+        value: h.value,
+        component: nearestComponent(h.node).component,
+        path: ancestorPath(h.node, 6),
+        selected: !!selectedIds[h.node.id],
+      };
+    }),
   };
 }
 

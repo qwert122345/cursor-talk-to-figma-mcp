@@ -2497,7 +2497,7 @@ server.tool(
 );
 server.tool(
   "set_selections",
-  "Set selection to multiple nodes in Figma and scroll viewport to show them",
+  "Set selection to multiple nodes in Figma and scroll viewport to show them. Switches to the page the nodes live on first; nodes on other pages are reported as skipped rather than failing the call (Figma keeps one selection per page).",
   {
     nodeIds: z.array(z.string()).describe("Array of node IDs to select")
   },
@@ -2509,7 +2509,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Selected ${typedResult.count} nodes: ${typedResult.selectedNodes.map((node) => `"${node.name}" (${node.id})`).join(", ")}`
+            text: `${typedResult.message ?? `Selected ${typedResult.count} nodes`}: ${typedResult.selectedNodes.map((node) => `"${node.name}" (${node.id})`).join(", ")}`
           }
         ]
       };
@@ -2519,6 +2519,46 @@ server.tool(
           {
             type: "text",
             text: `Error setting selections: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "select_hardcoded",
+  "Find nodes that hardcode a property (fills, strokes, cornerRadius, itemSpacing, paddingLeft/Right/Top/Bottom, fontSize) instead of binding a variable, and SELECT them in Figma so a person can review them. Optionally filter to one exact value. Switches to the page of the first match; matches on other pages are counted but not selected, so page through with pageName or offset. Use this instead of get_variable_bindings when the goal is 'show me those nodes' rather than 'give me the numbers'.",
+  {
+    property: z.enum([
+      "fills",
+      "strokes",
+      "cornerRadius",
+      "itemSpacing",
+      "paddingLeft",
+      "paddingRight",
+      "paddingTop",
+      "paddingBottom",
+      "fontSize"
+    ]).describe("Which property to look for"),
+    value: z.union([z.string(), z.number()]).optional().describe('Only match this exact value, e.g. 100 for cornerRadius or "#2974ff" for fills. Omit to match any hardcoded value'),
+    pageName: z.string().optional().describe("Limit the scan to a single page by name"),
+    nodeId: z.string().optional().describe("Limit the scan to this node and its children"),
+    excludePages: z.array(z.string()).optional().describe("Page names to skip"),
+    offset: z.number().optional().describe("Matches to skip, for paging (default 0)"),
+    limit: z.number().optional().describe("Max nodes to select in one call (default 50)")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("select_hardcoded", params);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error selecting hardcoded nodes: ${error instanceof Error ? error.message : String(error)}`
           }
         ]
       };
