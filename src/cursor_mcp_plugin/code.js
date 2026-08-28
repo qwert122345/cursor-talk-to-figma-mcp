@@ -247,6 +247,8 @@ async function handleCommand(command, params) {
       return await cloneMultipleNodes(params);
     case "rename_multiple_nodes":
       return await renameMultipleNodes(params);
+    case "rename_variant_property":
+      return await renameVariantProperty(params);
     case "set_item_spacing":
       return await setItemSpacing(params);
     case "get_reactions":
@@ -3997,6 +3999,86 @@ async function setMultipleLayoutSizing(params) {
 }
 
 // E-9: 이름만 바꾸는 왕복도 표 단위로는 수십 번이라 배치를 둔다.
+// E-16: 변이 속성 키 개명 (C4_03 의 Size -> Scale).
+// 변이 속성은 자식 COMPONENT 의 이름("Size=Regular, Type=Filled")이 정의라
+// 노드 이름을 직접 갈아도 되지만, 그러면 기존 인스턴스의 선택값이 살아남는지가
+// 보장되지 않는다. editComponentProperty 가 피그마가 인스턴스 이관까지 책임지는
+// 정식 경로라 이쪽만 쓴다.
+async function renameVariantProperty(params) {
+  params = params || {};
+  var nodeIds = params.nodeIds;
+  var from = params.from;
+  var to = params.to;
+  var dryRun = params.dryRun === true;
+
+  if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0)
+    throw new Error("Missing or empty nodeIds parameter");
+  if (!from || !to) throw new Error("Missing from/to parameter");
+
+  var results = [];
+  var errors = [];
+
+  for (var i = 0; i < nodeIds.length; i++) {
+    var id = nodeIds[i];
+    try {
+      var node = await figma.getNodeByIdAsync(id);
+      if (!node) throw new Error("Node not found with ID: " + id);
+      if (node.type !== "COMPONENT_SET")
+        throw new Error("Not a COMPONENT_SET: " + node.type);
+
+      var props = node.variantGroupProperties || {};
+      if (!props[from]) {
+        results.push({
+          id: id,
+          name: node.name,
+          status: "skipped",
+          reason: "no property named " + from,
+          properties: Object.keys(props),
+        });
+        continue;
+      }
+      if (props[to]) throw new Error("Property " + to + " already exists on " + node.name);
+
+      var values = props[from].values || [];
+      if (dryRun) {
+        results.push({
+          id: id,
+          name: node.name,
+          status: "would-rename",
+          from: from,
+          to: to,
+          values: values,
+          variants: node.children.length,
+        });
+        continue;
+      }
+
+      node.editComponentProperty(from, { name: to });
+      var after = Object.keys(node.variantGroupProperties || {});
+      results.push({
+        id: id,
+        name: node.name,
+        status: after.indexOf(to) !== -1 ? "renamed" : "unverified",
+        from: from,
+        to: to,
+        values: values,
+        properties: after,
+      });
+    } catch (error) {
+      errors.push({ nodeId: id, error: error.message });
+    }
+  }
+
+  return {
+    requested: nodeIds.length,
+    dryRun: dryRun,
+    succeeded: results.length,
+    failed: errors.length,
+    results: results,
+    errors: errors,
+  };
+}
+
 async function renameMultipleNodes(params) {
   const { items } = params || {};
 

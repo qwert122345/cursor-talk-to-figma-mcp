@@ -997,6 +997,41 @@ server.tool(
   }
 );
 
+// Rename Variant Property Tool
+server.tool(
+  "rename_variant_property",
+  "Rename a variant property key on component sets (e.g. Size -> Scale) via editComponentProperty, the sanctioned path that also migrates existing instances. Pass dryRun first to see which sets would change. Sets without the property are reported as skipped, not failed.",
+  {
+    nodeIds: z.array(z.string()).describe("COMPONENT_SET node ids"),
+    from: z.string().describe("Current property key, e.g. Size"),
+    to: z.string().describe("New property key, e.g. Scale"),
+    dryRun: z.boolean().optional().describe("Report what would change without writing"),
+  },
+  async ({ nodeIds, from, to, dryRun }: any) => {
+    try {
+      const result = await sendCommandToFigma("rename_variant_property", { nodeIds, from, to, dryRun });
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming variant property: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Get Grid Usage Tool
 server.tool(
   "get_grid_usage",
@@ -3195,6 +3230,7 @@ type FigmaCommand =
   | "delete_multiple_nodes"
   | "get_styles"
   | "get_grid_usage"
+  | "rename_variant_property"
   | "get_local_components"
   | "get_local_variables"
   | "get_variable_bindings"

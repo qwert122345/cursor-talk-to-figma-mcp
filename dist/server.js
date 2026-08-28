@@ -789,6 +789,38 @@ server.tool(
   }
 );
 server.tool(
+  "rename_variant_property",
+  "Rename a variant property key on component sets (e.g. Size -> Scale) via editComponentProperty, the sanctioned path that also migrates existing instances. Pass dryRun first to see which sets would change. Sets without the property are reported as skipped, not failed.",
+  {
+    nodeIds: z.array(z.string()).describe("COMPONENT_SET node ids"),
+    from: z.string().describe("Current property key, e.g. Size"),
+    to: z.string().describe("New property key, e.g. Scale"),
+    dryRun: z.boolean().optional().describe("Report what would change without writing")
+  },
+  async ({ nodeIds, from, to, dryRun }) => {
+    try {
+      const result = await sendCommandToFigma("rename_variant_property", { nodeIds, from, to, dryRun });
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming variant property: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "get_grid_usage",
   "Report which nodes consume each local grid style, with per-page counts and a node sample. Reverse lookup via style.consumers, so no full document walk. This is the only way to tell whether a grid style is actually applied: get_node_info and get_layout_audit never return gridStyleId or layoutGrids.",
   {
