@@ -5134,6 +5134,8 @@ async function getLocalVariables() {
 // 피그마는 layoutMode 를 NONE 으로 바꿔도 그 값을 지우지 않는데, 렌더에는
 // 전혀 반영되지 않는다. 죽은 값을 "하드코딩 위반"으로 세면 모수가 부풀고
 // 화면과 대조가 안 된다(2026-08-29 btn-speaking 74건이 이 경우였다).
+// 같은 이유로 간격이 Auto(SPACE_BETWEEN)일 때도 저장된 숫자는 쓰이지 않는다
+// (x-axis 50건. 둘 다 사람이 화면을 보고 "그 간격 아닌데?" 라고 짚어 드러났다).
 var LAYOUT_ONLY_PROPS = {
   itemSpacing: true,
   counterAxisSpacing: true,
@@ -5195,6 +5197,9 @@ function hardcodedProps(node) {
     if (value === figma.mixed) continue;
     // 오토레이아웃이 없으면 간격·패딩은 렌더에 안 쓰인다 — 위반이 아니다.
     if (LAYOUT_ONLY_PROPS[check.prop] && node.layoutMode === "NONE") continue;
+    // 간격이 Auto(SPACE_BETWEEN)면 저장된 숫자를 안 쓰고 계산한다. 역시 죽은 값.
+    if (check.prop === "itemSpacing" && node.primaryAxisAlignItems === "SPACE_BETWEEN") continue;
+    if (check.prop === "counterAxisSpacing" && node.counterAxisAlignContent === "SPACE_BETWEEN") continue;
     // ponytail: a 0 radius/spacing/padding is almost never a missing token,
     // and flagging it buries the real findings. Drop the guard if 0 matters.
     if (value === 0) continue;
