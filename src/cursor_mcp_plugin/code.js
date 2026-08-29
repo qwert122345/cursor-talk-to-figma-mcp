@@ -251,6 +251,8 @@ async function handleCommand(command, params) {
       return await renameVariantProperty(params);
     case "swap_instances_by_key":
       return await swapInstancesByKey(params);
+    case "bind_variable":
+      return await bindVariable(params);
     case "set_item_spacing":
       return await setItemSpacing(params);
     case "get_reactions":
@@ -5102,6 +5104,7 @@ async function getLocalVariables() {
       }
       out.push({
         id: v.id,
+        key: v.key,
         name: v.name,
         type: v.resolvedType,
         scopes: v.scopes,
@@ -6139,5 +6142,148 @@ async function getInstanceCensus(params) {
     instancesFor: wanted,
     matchedInstances: wanted ? matchTotal : undefined,
     instances: wanted ? matches : undefined,
+  };
+}
+
+// ── E-18: bind_variable ─────────────────────────────────────────────────────
+// 노드 여러 개의 한 속성을 변수에 일괄 바인딩한다.
+// variableKey(라이브러리 변수, importVariableByKeyAsync) 또는 variableId(로컬) 중 하나.
+// property: itemSpacing | cornerRadius(네 모서리 동시) | paddingLeft/Right/Top/Bottom
+//         | strokeWeight | width | height | fills(첫 SOLID paint 의 color)
+var BIND_FIELDS = {
+  itemSpacing: ["itemSpacing"],
+  counterAxisSpacing: ["counterAxisSpacing"],
+  cornerRadius: ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"],
+  paddingLeft: ["paddingLeft"],
+  paddingRight: ["paddingRight"],
+  paddingTop: ["paddingTop"],
+  paddingBottom: ["paddingBottom"],
+  strokeWeight: ["strokeWeight"],
+  width: ["width"],
+  height: ["height"],
+};
+
+async function bindVariable(params) {
+  params = params || {};
+  var nodeIds = params.nodeIds;
+  var property = params.property;
+  var dryRun = params.dryRun === true;
+
+  if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("Missing or invalid nodeIds parameter");
+  }
+  if (!property) throw new Error("Missing property parameter");
+  if (property !== "fills" && !BIND_FIELDS[property]) {
+    throw new Error(
+      "Unsupported property: " + property + ". Supported: fills, " + Object.keys(BIND_FIELDS).join(", ")
+    );
+  }
+
+  // 변수 해석
+  var variable = null;
+  if (params.variableKey) {
+    try {
+      variable = await figma.variables.importVariableByKeyAsync(params.variableKey);
+    } catch (e) {
+      throw new Error("importVariableByKeyAsync failed for key " + params.variableKey + ": " + e.message);
+    }
+  } else if (params.variableId) {
+    variable = await figma.variables.getVariableByIdAsync(params.variableId);
+    if (!variable) throw new Error("Variable not found: " + params.variableId);
+  } else {
+    throw new Error("Missing variableKey or variableId parameter");
+  }
+
+  if (property === "fills" && variable.resolvedType !== "COLOR") {
+    throw new Error("property 'fills' requires a COLOR variable, got " + variable.resolvedType);
+  }
+  if (property !== "fills" && variable.resolvedType !== "FLOAT") {
+    throw new Error("property '" + property + "' requires a FLOAT variable, got " + variable.resolvedType);
+  }
+
+  var bound = [];
+  var skipped = [];
+  var failed = [];
+  var fields = BIND_FIELDS[property] || [];
+
+  for (var i = 0; i < nodeIds.length; i++) {
+    var id = nodeIds[i];
+    var node;
+    try {
+      node = await figma.getNodeByIdAsync(id);
+    } catch (e) {
+      failed.push({ nodeId: id, reason: e.message });
+      continue;
+    }
+    if (!node) {
+      failed.push({ nodeId: id, reason: "Node not found" });
+      continue;
+    }
+    if (typeof node.setBoundVariable !== "function") {
+      failed.push({ nodeId: id, name: node.name, reason: "Node type " + node.type + " cannot bind variables" });
+      continue;
+    }
+
+    try {
+      if (property === "fills") {
+        var fills = node.fills;
+        if (fills === figma.mixed || !Array.isArray(fills) || fills.length === 0) {
+          skipped.push({ nodeId: id, name: node.name, reason: "no fills / mixed" });
+          continue;
+        }
+        var idx = -1;
+        for (var f = 0; f < fills.length; f++) {
+          if (fills[f].type === "SOLID") { idx = f; break; }
+        }
+        if (idx === -1) {
+          skipped.push({ nodeId: id, name: node.name, reason: "no SOLID fill" });
+          continue;
+        }
+        if (fills[idx].boundVariables && fills[idx].boundVariables.color) {
+          skipped.push({ nodeId: id, name: node.name, reason: "already bound" });
+          continue;
+        }
+        if (dryRun) {
+          bound.push({ nodeId: id, name: node.name, type: node.type, dryRun: true });
+          continue;
+        }
+        var next = fills.slice();
+        next[idx] = figma.variables.setBoundVariableForPaint(next[idx], "color", variable);
+        node.fills = next;
+        bound.push({ nodeId: id, name: node.name, type: node.type });
+      } else {
+        var already = fields.every(function (fl) {
+          return node.boundVariables && node.boundVariables[fl];
+        });
+        if (already) {
+          skipped.push({ nodeId: id, name: node.name, reason: "already bound" });
+          continue;
+        }
+        if (dryRun) {
+          bound.push({ nodeId: id, name: node.name, type: node.type, dryRun: true });
+          continue;
+        }
+        for (var g = 0; g < fields.length; g++) {
+          node.setBoundVariable(fields[g], variable);
+        }
+        bound.push({ nodeId: id, name: node.name, type: node.type });
+      }
+    } catch (e) {
+      failed.push({ nodeId: id, name: node.name, reason: e.message });
+    }
+  }
+
+  return {
+    property: property,
+    fields: property === "fills" ? ["fills[].color"] : fields,
+    variable: { id: variable.id, key: variable.key, name: variable.name, type: variable.resolvedType },
+    dryRun: dryRun,
+    requested: nodeIds.length,
+    boundCount: bound.length,
+    skippedCount: skipped.length,
+    failedCount: failed.length,
+    bound: bound,
+    skipped: skipped,
+    failed: failed,
   };
 }

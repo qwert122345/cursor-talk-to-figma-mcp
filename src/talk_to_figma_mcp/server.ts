@@ -1032,6 +1032,36 @@ server.tool(
   }
 );
 
+// Bind Variable Tool (E-18)
+server.tool(
+  "bind_variable",
+  "Bind a variable to one property across many nodes at once — the fix for hardcoded literals. Pass variableKey (from get_local_variables, run against the LIBRARY file) to bind a published library variable in a consuming file; variableId only works for a variable local to the current file. property 'cornerRadius' binds all four corners; 'fills' binds the color of the first SOLID paint. Nodes already bound are reported under skipped, not overwritten. Pass dryRun first.",
+  {
+    nodeIds: z.array(z.string()).describe("Node ids to bind"),
+    property: z.string().describe("fills | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
+    variableKey: z.string().optional().describe("Key of a published variable (imported via importVariableByKeyAsync). Use this across files"),
+    variableId: z.string().optional().describe("Id of a variable local to the current file"),
+    dryRun: z.boolean().optional().describe("Report what would change without writing"),
+  },
+  async ({ nodeIds, property, variableKey, variableId, dryRun }: any) => {
+    try {
+      const result = await sendCommandToFigma("bind_variable", { nodeIds, property, variableKey, variableId, dryRun });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error binding variable: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Swap Instances By Key Tool (E-17)
 server.tool(
   "swap_instances_by_key",
@@ -3267,6 +3297,7 @@ type FigmaCommand =
   | "get_grid_usage"
   | "rename_variant_property"
   | "swap_instances_by_key"
+  | "bind_variable"
   | "get_local_components"
   | "get_local_variables"
   | "get_variable_bindings"

@@ -843,6 +843,34 @@ server.tool(
   }
 );
 server.tool(
+  "bind_variable",
+  "Bind a variable to one property across many nodes at once \u2014 the fix for hardcoded literals. Pass variableKey (from get_local_variables, run against the LIBRARY file) to bind a published library variable in a consuming file; variableId only works for a variable local to the current file. property 'cornerRadius' binds all four corners; 'fills' binds the color of the first SOLID paint. Nodes already bound are reported under skipped, not overwritten. Pass dryRun first.",
+  {
+    nodeIds: import_zod.z.array(import_zod.z.string()).describe("Node ids to bind"),
+    property: import_zod.z.string().describe("fills | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
+    variableKey: import_zod.z.string().optional().describe("Key of a published variable (imported via importVariableByKeyAsync). Use this across files"),
+    variableId: import_zod.z.string().optional().describe("Id of a variable local to the current file"),
+    dryRun: import_zod.z.boolean().optional().describe("Report what would change without writing")
+  },
+  async ({ nodeIds, property, variableKey, variableId, dryRun }) => {
+    try {
+      const result = await sendCommandToFigma("bind_variable", { nodeIds, property, variableKey, variableId, dryRun });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error binding variable: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "swap_instances_by_key",
   "Rebind instances to a different main component, given the target component key. This is the fix for orphan instances whose old library component no longer exists in the DS file. Pass viaNodeId \u2014 the id of a healthy instance whose component set contains the target variant \u2014 and the target is resolved from that set's siblings with no document scan. viaNodeId is REQUIRED in practice for `.`-prefixed (unpublished) components: importComponentByKeyAsync cannot fetch them and create_component_instance fails on them. Without viaNodeId it falls back to importComponentByKeyAsync, then to a document scan that stops at the first match. Pass dryRun first to see what would change.",
   {
