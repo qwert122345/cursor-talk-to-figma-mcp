@@ -249,6 +249,8 @@ async function handleCommand(command, params) {
       return await renameMultipleNodes(params);
     case "rename_variant_property":
       return await renameVariantProperty(params);
+    case "swap_instances_by_key":
+      return await swapInstancesByKey(params);
     case "set_item_spacing":
       return await setItemSpacing(params);
     case "get_reactions":
@@ -4073,6 +4075,170 @@ async function renameVariantProperty(params) {
     requested: nodeIds.length,
     dryRun: dryRun,
     succeeded: results.length,
+    failed: errors.length,
+    results: results,
+    errors: errors,
+  };
+}
+
+// E-17 (2026-08-29) — 인스턴스의 main component 를 key 로 교체한다.
+// 왜 필요했나: 고아 인스턴스(C8_03)를 고치려면 새 컴포넌트로 스왑해야 하는데,
+//  - create_component_instance 는 `.` 접두사 컴포넌트에서 실패한다(발행 자산이 아니라 importComponentByKeyAsync 가 못 잡는다)
+//  - set_instance_overrides 는 "소스 인스턴스"를 요구하는데, 문제의 변이는 파일에 healthy 인스턴스가 하나도 없다
+// 해결: viaNodeId 로 같은 세트의 건강한 인스턴스를 하나 받아, 그 mainComponent 의 부모
+//       COMPONENT_SET 에서 형제 변이를 꺼낸다. 임포트된 세트라 형제는 이미 문서 안에 있다.
+async function swapInstancesByKey(params) {
+  params = params || {};
+  var nodeIds = params.nodeIds;
+  var toKey = params.toKey;
+  var viaNodeId = params.viaNodeId;
+  var dryRun = params.dryRun === true;
+
+  if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0)
+    throw new Error("Missing or empty nodeIds parameter");
+  if (!toKey) throw new Error("Missing toKey parameter");
+
+  var target = null;
+  var resolvedVia = null;
+
+  // (a) viaNodeId 경유 — 스캔 없이 O(1). 권장 경로.
+  if (viaNodeId) {
+    var via = await figma.getNodeByIdAsync(viaNodeId);
+    if (!via) throw new Error("viaNodeId not found: " + viaNodeId);
+    var viaMain =
+      via.type === "INSTANCE" ? await via.getMainComponentAsync() : via;
+    if (!viaMain) throw new Error("viaNodeId has no main component");
+    if (viaMain.key === toKey) {
+      target = viaMain;
+      resolvedVia = "viaNodeId (direct)";
+    } else if (viaMain.parent && viaMain.parent.type === "COMPONENT_SET") {
+      var sibs = viaMain.parent.children;
+      for (var s0 = 0; s0 < sibs.length; s0++) {
+        if (sibs[s0].key === toKey) {
+          target = sibs[s0];
+          resolvedVia = "viaNodeId (sibling variant of " + viaMain.parent.name + ")";
+          break;
+        }
+      }
+    }
+    if (!target)
+      throw new Error(
+        "toKey not found via viaNodeId. Its set is " +
+          (viaMain.parent ? viaMain.parent.name : "(none)") +
+          ". Pass a viaNodeId whose component set contains the target key."
+      );
+  }
+
+  // (b) 발행 컴포넌트면 키로 바로 임포트된다.
+  if (!target) {
+    try {
+      target = await figma.importComponentByKeyAsync(toKey);
+      if (target) resolvedVia = "importComponentByKeyAsync";
+    } catch (e) {
+      target = null;
+    }
+  }
+
+  // (c) 최후 수단 — 문서를 훑되 첫 매치에서 즉시 멈춘다.
+  //     census 가 느린 이유는 전수를 끝까지 돌기 때문이다. 여기선 early exit 이 핵심.
+  var scanned = 0;
+  if (!target) {
+    await figma.loadAllPagesAsync();
+    var all = figma.root.findAllWithCriteria({ types: ["INSTANCE"] });
+    for (var i0 = 0; i0 < all.length; i0++) {
+      scanned++;
+      var m = null;
+      try {
+        m = await all[i0].getMainComponentAsync();
+      } catch (e) {
+        continue;
+      }
+      if (!m) continue;
+      if (m.key === toKey) {
+        target = m;
+        resolvedVia = "document scan (direct)";
+        break;
+      }
+      if (m.parent && m.parent.type === "COMPONENT_SET") {
+        var kids = m.parent.children;
+        for (var k0 = 0; k0 < kids.length; k0++) {
+          if (kids[k0].key === toKey) {
+            target = kids[k0];
+            resolvedVia = "document scan (sibling variant)";
+            break;
+          }
+        }
+        if (target) break;
+      }
+    }
+  }
+
+  if (!target)
+    throw new Error(
+      "Could not resolve a component for key " +
+        toKey +
+        ". For `.`-prefixed (unpublished) components pass viaNodeId — an instance whose component set contains the target variant."
+    );
+
+  var results = [];
+  var errors = [];
+  for (var i = 0; i < nodeIds.length; i++) {
+    var id = nodeIds[i];
+    try {
+      var node = await figma.getNodeByIdAsync(id);
+      if (!node) throw new Error("Node not found with ID: " + id);
+      if (node.type !== "INSTANCE")
+        throw new Error("Not an INSTANCE: " + node.type);
+
+      var before = await node.getMainComponentAsync();
+      var beforeKey = before ? before.key : null;
+      var beforeName = before ? before.name : null;
+
+      if (beforeKey === toKey) {
+        results.push({
+          id: id,
+          name: node.name,
+          status: "skipped",
+          reason: "already bound to toKey",
+        });
+        continue;
+      }
+      if (dryRun) {
+        results.push({
+          id: id,
+          name: node.name,
+          status: "would-swap",
+          fromKey: beforeKey,
+          fromName: beforeName,
+        });
+        continue;
+      }
+
+      node.swapComponent(target);
+      var after = await node.getMainComponentAsync();
+      results.push({
+        id: id,
+        name: node.name,
+        status: after && after.key === toKey ? "swapped" : "unverified",
+        fromKey: beforeKey,
+        fromName: beforeName,
+        toName: after ? after.name : null,
+      });
+    } catch (error) {
+      errors.push({ nodeId: id, error: error.message });
+    }
+  }
+
+  return {
+    requested: nodeIds.length,
+    toKey: toKey,
+    resolvedVia: resolvedVia,
+    targetName: target.name,
+    targetSet: target.parent && target.parent.type === "COMPONENT_SET" ? target.parent.name : null,
+    scannedInstances: scanned,
+    dryRun: dryRun,
+    succeeded: results.filter(function (r) { return r.status === "swapped" || r.status === "would-swap"; }).length,
+    skipped: results.filter(function (r) { return r.status === "skipped"; }).length,
     failed: errors.length,
     results: results,
     errors: errors,

@@ -1032,6 +1032,41 @@ server.tool(
   }
 );
 
+// Swap Instances By Key Tool (E-17)
+server.tool(
+  "swap_instances_by_key",
+  "Rebind instances to a different main component, given the target component key. This is the fix for orphan instances whose old library component no longer exists in the DS file. Pass viaNodeId — the id of a healthy instance whose component set contains the target variant — and the target is resolved from that set's siblings with no document scan. viaNodeId is REQUIRED in practice for `.`-prefixed (unpublished) components: importComponentByKeyAsync cannot fetch them and create_component_instance fails on them. Without viaNodeId it falls back to importComponentByKeyAsync, then to a document scan that stops at the first match. Pass dryRun first to see what would change.",
+  {
+    nodeIds: z.array(z.string()).describe("INSTANCE node ids to rebind"),
+    toKey: z.string().describe("Key of the component to swap to (from get_local_components)"),
+    viaNodeId: z.string().optional().describe("An instance already bound to the target's component set; the target variant is taken from its siblings. Required for `.`-prefixed components"),
+    dryRun: z.boolean().optional().describe("Report what would change without writing"),
+  },
+  async ({ nodeIds, toKey, viaNodeId, dryRun }: any) => {
+    try {
+      const result = await sendCommandToFigma("swap_instances_by_key", { nodeIds, toKey, viaNodeId, dryRun });
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error swapping instances: ${error instanceof Error ? error.message : String(error)
+              }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Get Grid Usage Tool
 server.tool(
   "get_grid_usage",
@@ -3231,6 +3266,7 @@ type FigmaCommand =
   | "get_styles"
   | "get_grid_usage"
   | "rename_variant_property"
+  | "swap_instances_by_key"
   | "get_local_components"
   | "get_local_variables"
   | "get_variable_bindings"
