@@ -158,6 +158,8 @@ async function handleCommand(command, params) {
       return await getLayoutAudit(params);
     case "find_hidden_nodes":
       return await findHiddenNodes(params);
+    case "find_nodes_by_name":
+      return await findNodesByName(params);
     case "set_multiple_opacity":
       return await setMultipleOpacity(params);
     case "get_hyperlinks":
@@ -5277,6 +5279,110 @@ async function setMultipleOpacity(params) {
 // E-11: "분명히 있다는데 화면에서 못 찾겠다" 를 푸는 스캔.
 // 노드가 안 보이는 이유는 눈 아이콘만이 아니다 — 부모가 꺼졌거나, 투명하거나,
 // 크기가 0이거나, 부모의 clipsContent 에 잘려 나갔거나다. 이유를 함께 돌려준다.
+// E-20: 이름으로 노드를 찾는다. find_hidden_nodes 의 nameFilter 는 "안 보이는" 것만 돌려주고
+// scan_nodes_by_types 는 이름을 못 거른다 — 표준 레이어(예: "Interaction")를 전수로 집는 수단이 없었다.
+async function findNodesByName(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  var limit = params.limit || 500;
+  var offset = params.offset || 0;
+  var name = String(params.name || "");
+  if (!name) throw new Error("name is required");
+  var needle = name.toLowerCase();
+  var exact = params.exact === true;
+  var types = params.types || null;
+  var parentTypes = params.parentTypes || null;
+  var idsOnly = params.idsOnly === true;
+
+  var targets = await resolveScanTargets(params);
+
+  await sendProgressUpdate(
+    commandId,
+    "find_nodes_by_name",
+    "started",
+    0,
+    targets.length,
+    0,
+    "Scanning " + targets.length + " target(s) for \"" + name + "\"...",
+    null
+  );
+
+  var findings = [];
+  var byType = {};
+  var scannedNodes = 0;
+
+  for (var i = 0; i < targets.length; i++) {
+    var target = targets[i];
+    if (target.node.type === "PAGE") await target.node.loadAsync();
+
+    var nodes = target.node.findAll
+      ? target.node.findAll(function () {
+          return true;
+        })
+      : [];
+    if (target.node.type !== "PAGE") nodes = [target.node].concat(nodes);
+
+    for (var j = 0; j < nodes.length; j++) {
+      var node = nodes[j];
+      scannedNodes++;
+      var nodeName = String(node.name);
+      if (exact ? nodeName !== name : nodeName.toLowerCase().indexOf(needle) === -1)
+        continue;
+      if (types && types.indexOf(node.type) === -1) continue;
+      var parent = node.parent;
+      if (parentTypes && (!parent || parentTypes.indexOf(parent.type) === -1)) continue;
+
+      byType[node.type] = (byType[node.type] || 0) + 1;
+      if (idsOnly) {
+        findings.push(node.id);
+        continue;
+      }
+      var where = nearestComponent(node);
+      findings.push({
+        id: node.id,
+        name: nodeName,
+        type: node.type,
+        page: target.pageName,
+        parentId: parent ? parent.id : null,
+        parentType: parent ? parent.type : null,
+        component: where.component,
+        variant: where.variant,
+        path: ancestorPath(node),
+      });
+    }
+  }
+
+  await sendProgressUpdate(
+    commandId,
+    "find_nodes_by_name",
+    "completed",
+    100,
+    1,
+    1,
+    "Found " + findings.length + " node(s)",
+    null
+  );
+
+  var out = {
+    scannedNodes: scannedNodes,
+    totalFindings: findings.length,
+    byType: byType,
+    name: name,
+    exact: exact,
+  };
+  // idsOnly 는 페이징하지 않는다 — 대량 삭제·선택에 그대로 넘기는 게 목적이라 잘리면 위험하다.
+  if (idsOnly) {
+    out.ids = findings;
+    return out;
+  }
+  out.offset = offset;
+  out.limit = limit;
+  out.returned = Math.min(limit, Math.max(0, findings.length - offset));
+  out.hasMore = offset + limit < findings.length;
+  out.findings = findings.slice(offset, offset + limit);
+  return out;
+}
+
 async function findHiddenNodes(params) {
   params = params || {};
   var commandId = params.commandId || generateCommandId();

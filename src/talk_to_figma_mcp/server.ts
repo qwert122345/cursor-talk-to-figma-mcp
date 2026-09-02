@@ -1389,6 +1389,50 @@ server.tool(
   }
 );
 
+// DS healthcheck: find every node carrying a given layer name
+server.tool(
+  "find_nodes_by_name",
+  "Find nodes by layer name across the file. find_hidden_nodes only reports nodes that are invisible and scan_nodes_by_types cannot filter by name, so this is the way to enumerate a standard layer (e.g. every \"Interaction\" frame). Narrow with types (node types) and parentTypes — parentTypes:[\"COMPONENT\"] keeps only main-component children and drops copies living inside instances, which cannot be edited anyway. idsOnly returns just the id array, unpaged, ready to hand to delete_multiple_nodes or set_selections. Scope with nodeId or pageName, skip pages with excludePages.",
+  {
+    name: z.string().describe("Layer name to match (substring, case-insensitive, unless exact)"),
+    exact: z.boolean().optional().describe("Require the whole name to match exactly, case-sensitive"),
+    types: z.array(z.string()).optional().describe("Only report these node types, e.g. [\"FRAME\"]"),
+    parentTypes: z.array(z.string()).optional().describe("Only report nodes whose direct parent is one of these types, e.g. [\"COMPONENT\"]"),
+    idsOnly: z.boolean().optional().describe("Return only the id array (unpaged) instead of full findings"),
+    nodeId: z.string().optional().describe("Limit the scan to this node and its children"),
+    pageName: z.string().optional().describe("Limit the scan to a single page by name"),
+    excludePages: z.array(z.string()).optional().describe("Page names to skip"),
+    limit: z.number().optional().describe("Max findings to return (default 500)"),
+    offset: z.number().optional().describe("Findings to skip, for paging"),
+  },
+  async ({ name, exact, types, parentTypes, idsOnly, nodeId, pageName, excludePages, limit, offset }: any) => {
+    try {
+      const result = await sendCommandToFigma(
+        "find_nodes_by_name",
+        { name, exact, types, parentTypes, idsOnly, nodeId, pageName, excludePages, limit, offset },
+        120000
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error finding nodes by name: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+
 // DS healthcheck: "it exists but I cannot find it on canvas" scan
 server.tool(
   "find_hidden_nodes",
@@ -3304,6 +3348,7 @@ type FigmaCommand =
   | "get_instance_census"
   | "get_layout_audit"
   | "find_hidden_nodes"
+  | "find_nodes_by_name"
   | "set_multiple_opacity"
   | "get_hyperlinks"
   | "detach_instances"
@@ -3536,6 +3581,18 @@ type CommandParams = {
     pageName?: string;
     excludePages?: string[];
     nameFilter?: string;
+    limit?: number;
+    offset?: number;
+  };
+  find_nodes_by_name: {
+    name: string;
+    exact?: boolean;
+    types?: string[];
+    parentTypes?: string[];
+    idsOnly?: boolean;
+    nodeId?: string;
+    pageName?: string;
+    excludePages?: string[];
     limit?: number;
     offset?: number;
   };

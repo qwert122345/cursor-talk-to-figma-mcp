@@ -1149,6 +1149,48 @@ server.tool(
   }
 );
 server.tool(
+  "find_nodes_by_name",
+  'Find nodes by layer name across the file. find_hidden_nodes only reports nodes that are invisible and scan_nodes_by_types cannot filter by name, so this is the way to enumerate a standard layer (e.g. every "Interaction" frame). Narrow with types (node types) and parentTypes \u2014 parentTypes:["COMPONENT"] keeps only main-component children and drops copies living inside instances, which cannot be edited anyway. idsOnly returns just the id array, unpaged, ready to hand to delete_multiple_nodes or set_selections. Scope with nodeId or pageName, skip pages with excludePages.',
+  {
+    name: z.string().describe("Layer name to match (substring, case-insensitive, unless exact)"),
+    exact: z.boolean().optional().describe("Require the whole name to match exactly, case-sensitive"),
+    types: z.array(z.string()).optional().describe('Only report these node types, e.g. ["FRAME"]'),
+    parentTypes: z.array(z.string()).optional().describe('Only report nodes whose direct parent is one of these types, e.g. ["COMPONENT"]'),
+    idsOnly: z.boolean().optional().describe("Return only the id array (unpaged) instead of full findings"),
+    nodeId: z.string().optional().describe("Limit the scan to this node and its children"),
+    pageName: z.string().optional().describe("Limit the scan to a single page by name"),
+    excludePages: z.array(z.string()).optional().describe("Page names to skip"),
+    limit: z.number().optional().describe("Max findings to return (default 500)"),
+    offset: z.number().optional().describe("Findings to skip, for paging")
+  },
+  async ({ name, exact, types, parentTypes, idsOnly, nodeId, pageName, excludePages, limit, offset }) => {
+    try {
+      const result = await sendCommandToFigma(
+        "find_nodes_by_name",
+        { name, exact, types, parentTypes, idsOnly, nodeId, pageName, excludePages, limit, offset },
+        12e4
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result)
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error finding nodes by name: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "find_hidden_nodes",
   `Find nodes that exist in the file but are not visible on canvas, with the reason for each: hidden (visible=false), parentHidden (an ancestor is toggled off), transparent (opacity 0), faded (opacity below 1, only with includeFaded), zeroSize, clipped (fully outside a clipsContent ancestor) or clippedPartly. get_node_info does not return visible/opacity/clipsContent, so this is the only way to answer "why can't I see it". Scope with nodeId or pageName, skip pages with excludePages, and narrow with nameFilter (substring, case-insensitive).`,
   {
