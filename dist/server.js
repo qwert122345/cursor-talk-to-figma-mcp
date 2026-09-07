@@ -850,15 +850,20 @@ server.tool(
 );
 server.tool(
   "unbind_variable",
-  "Detach a variable binding from one property across many nodes \u2014 the reverse of bind_variable. The resolved value stays as a raw literal, so nothing re-renders. Use it to clear a binding that has no visual effect and cannot be reached from Figma's UI (e.g. a strokeWeight bound on a frame that has no stroke paint, which the Design panel never shows). property 'strokeWeight' also sweeps the four per-side fields (strokeTop/Bottom/Left/RightWeight); 'cornerRadius' sweeps all four corners. Colors ('fills') are not supported yet. Nodes with nothing bound are reported under skipped. Pass dryRun first.",
+  "Detach variable bindings from one or more properties \u2014 the reverse of bind_variable. The resolved value stays as a raw literal, so nothing re-renders. Two ways to aim it: pass nodeIds for a known list, or scope with pageName/nodeId (omit both to sweep the whole file) and let it find the bound nodes itself. onlyOutsideComponents keeps only documentation nodes \u2014 anything that is not a COMPONENT/COMPONENT_SET/INSTANCE and has no component ancestor \u2014 which is how you clean tokens off spec frames and the wrappers around component sets without touching the components. property 'strokeWeight' also sweeps the four per-side fields (strokeTop/Bottom/Left/RightWeight), 'cornerRadius' all four corners, 'padding' all four sides. Under a scope, nodes with nothing bound are skipped silently; with explicit nodeIds they are reported. Always pass dryRun first and read byPage/byVariable.",
   {
-    nodeIds: z.array(z.string()).describe("Node ids to unbind"),
-    property: z.string().describe("itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
+    nodeIds: z.array(z.string()).optional().describe("Explicit node ids to unbind"),
+    pageName: z.string().optional().describe("Scope the sweep to one page"),
+    nodeId: z.string().optional().describe("Scope the sweep to this node and its children"),
+    excludePages: z.array(z.string()).optional().describe("Page names to skip when sweeping"),
+    onlyOutsideComponents: z.boolean().optional().describe("Only nodes with no component ancestor (documentation frames)"),
+    property: z.string().optional().describe("itemSpacing | counterAxisSpacing | cornerRadius | padding | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
+    properties: z.array(z.string()).optional().describe("Several of the above at once, in a single traversal"),
     dryRun: z.boolean().optional().describe("Report what would be cleared without writing")
   },
-  async ({ nodeIds, property, dryRun }) => {
+  async ({ nodeIds, pageName, nodeId, excludePages, onlyOutsideComponents, property, properties, dryRun }) => {
     try {
-      const result = await sendCommandToFigma("unbind_variable", { nodeIds, property, dryRun });
+      const result = await sendCommandToFigma("unbind_variable", { nodeIds, pageName, nodeId, excludePages, onlyOutsideComponents, property, properties, dryRun });
       return {
         content: [{ type: "text", text: JSON.stringify(result) }]
       };

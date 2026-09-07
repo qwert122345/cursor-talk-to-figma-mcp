@@ -6432,7 +6432,16 @@ var UNBIND_FIELDS = Object.assign({}, BIND_FIELDS, {
     "strokeLeftWeight",
     "strokeRightWeight",
   ],
+  // 네 변을 한 번에. 문서 프레임 청소처럼 "패딩 전부"가 대상일 때 스캔을 4번 안 돌아도 된다
+  padding: ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom"],
 });
+
+// 문서 프레임 판정: 자신이 컴포넌트가 아니고, 조상에도 컴포넌트가 없는 노드.
+// ⚠️ nearestComponent 는 node.parent 부터 보므로 COMPONENT_SET 자신도 null 이 나온다 — 타입을 따로 걸러야 한다.
+function isOutsideComponent(node) {
+  if (node.type === "COMPONENT" || node.type === "COMPONENT_SET" || node.type === "INSTANCE") return false;
+  return nearestComponent(node).component === null;
+}
 
 async function unbindVariable(params) {
   params = params || {};
@@ -6440,43 +6449,80 @@ async function unbindVariable(params) {
   var property = params.property;
   var dryRun = params.dryRun === true;
 
-  if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
-    throw new Error("Missing or invalid nodeIds parameter");
+  var props = params.properties && params.properties.length ? params.properties : (property ? [property] : null);
+  if (!props) throw new Error("Missing property (or properties) parameter");
+  for (var pi = 0; pi < props.length; pi++) {
+    if (!UNBIND_FIELDS[props[pi]]) {
+      throw new Error(
+        "Unsupported property: " + props[pi] + ". Supported: " + Object.keys(UNBIND_FIELDS).join(", ")
+      );
+    }
   }
-  if (!property) throw new Error("Missing property parameter");
-  if (!UNBIND_FIELDS[property]) {
-    throw new Error(
-      "Unsupported property: " + property + ". Supported: " + Object.keys(UNBIND_FIELDS).join(", ")
-    );
+  var fields = [];
+  for (var pj = 0; pj < props.length; pj++) {
+    var fl2 = UNBIND_FIELDS[props[pj]];
+    for (var fk = 0; fk < fl2.length; fk++) if (fields.indexOf(fl2[fk]) === -1) fields.push(fl2[fk]);
   }
 
-  var fields = UNBIND_FIELDS[property];
+  var explicit = nodeIds && Array.isArray(nodeIds) && nodeIds.length > 0;
+  var scoped = params.pageName || params.nodeId || params.onlyOutsideComponents;
+  if (!explicit && !scoped) {
+    throw new Error("Missing scope: pass nodeIds, or pageName/nodeId (optionally with onlyOutsideComponents)");
+  }
+  // 캐시는 스코프 스윕 때문에 있다. 명시 nodeIds 27건이면 없어도 그만이지만,
+  // 문서 프레임 전수 스윕은 16,000번 넘게 부르고 그러면 120초를 넘긴다(2026-09-07 실측).
+  var nameCache = {};
   async function variableLabel(id) {
     if (!id) return null;
+    if (nameCache[id] !== undefined) return nameCache[id];
+    var label = id;
     try {
       var v = await figma.variables.getVariableByIdAsync(id);
-      if (v) return v.name;
+      if (v) label = v.name;
     } catch (e) { /* 지워진 변수면 id 그대로 둔다 */ }
-    return id;
+    nameCache[id] = label;
+    return label;
   }
 
   var unbound = [];
   var skipped = [];
   var failed = [];
+  var onlyOutside = params.onlyOutsideComponents === true;
 
-  for (var i = 0; i < nodeIds.length; i++) {
-    var id = nodeIds[i];
-    var node;
-    try {
-      node = await figma.getNodeByIdAsync(id);
-    } catch (e) {
-      failed.push({ nodeId: id, reason: e.message });
-      continue;
+  // 대상 수집 — 명시 id 이거나, 스코프 순회로 "실제로 묶여 있는 노드"만 골라낸다
+  var queue = [];
+  if (explicit) {
+    for (var i = 0; i < nodeIds.length; i++) {
+      var nd;
+      try {
+        nd = await figma.getNodeByIdAsync(nodeIds[i]);
+      } catch (e) {
+        failed.push({ nodeId: nodeIds[i], reason: e.message });
+        continue;
+      }
+      if (!nd) { failed.push({ nodeId: nodeIds[i], reason: "Node not found" }); continue; }
+      queue.push(nd);
     }
-    if (!node) {
-      failed.push({ nodeId: id, reason: "Node not found" });
-      continue;
+  } else {
+    var targets = await resolveScanTargets(params);
+    for (var ti = 0; ti < targets.length; ti++) {
+      var stack = [targets[ti].node];
+      while (stack.length) {
+        var cur = stack.pop();
+        // 컴포넌트 안은 통째로 건너뛴다 — 대상이 아니고, 안 내려가면 스캔도 훨씬 가볍다
+        var isComp = cur.type === "COMPONENT" || cur.type === "COMPONENT_SET" || cur.type === "INSTANCE";
+        if (onlyOutside && isComp) continue;
+        if (cur.type !== "PAGE" && (!onlyOutside || isOutsideComponent(cur))) {
+          if (typeof cur.setBoundVariable === "function") queue.push(cur);
+        }
+        if (cur.children) for (var ci = 0; ci < cur.children.length; ci++) stack.push(cur.children[ci]);
+      }
     }
+  }
+
+  for (var i = 0; i < queue.length; i++) {
+    var node = queue[i];
+    var id = node.id;
     if (typeof node.setBoundVariable !== "function") {
       failed.push({ nodeId: id, name: node.name, reason: "Node type " + node.type + " cannot bind variables" });
       continue;
@@ -6495,31 +6541,46 @@ async function unbindVariable(params) {
         }
       }
       if (hit.length === 0) {
-        skipped.push({ nodeId: id, name: node.name, reason: "not bound" });
+        // 스코프 순회는 후보가 수천 개라 안 묶인 건 조용히 넘긴다. 명시 호출일 때만 보고한다
+        if (explicit) skipped.push({ nodeId: id, name: node.name, reason: "not bound" });
         continue;
       }
       if (dryRun) {
-        unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: hit, variable: wasNames.join(", "), dryRun: true });
+        unbound.push({ nodeId: id, name: node.name, type: node.type, page: pageNameOf(node), cleared: hit, variable: wasNames.join(", "), dryRun: true });
         continue;
       }
       for (var h = 0; h < hit.length; h++) {
         node.setBoundVariable(hit[h], null);
       }
-      unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: hit, variable: wasNames.join(", ") });
+      unbound.push({ nodeId: id, name: node.name, type: node.type, page: pageNameOf(node), cleared: hit, variable: wasNames.join(", ") });
     } catch (e) {
       failed.push({ nodeId: id, name: node.name, reason: e.message });
     }
   }
 
+  var byPage = {};
+  var byVariable = {};
+  for (var ui = 0; ui < unbound.length; ui++) {
+    var u = unbound[ui];
+    byPage[u.page || "?"] = (byPage[u.page || "?"] || 0) + 1;
+    byVariable[u.variable] = (byVariable[u.variable] || 0) + 1;
+  }
+
   return {
-    property: property,
+    properties: props,
     fieldsScanned: fields,
+    scope: explicit ? "nodeIds" : (params.nodeId || params.pageName || "whole file"),
+    onlyOutsideComponents: onlyOutside,
     dryRun: dryRun,
-    requested: nodeIds.length,
+    candidates: queue.length,
     unboundCount: unbound.length,
     skippedCount: skipped.length,
     failedCount: failed.length,
-    unbound: unbound,
+    byPage: byPage,
+    byVariable: byVariable,
+    // 작은 작업은 무엇을 건드렸는지 목록으로 남긴다(감사용). 스윕은 5,000건이 넘어
+    // 응답이 1MB 를 넘으므로 롤업만 준다 — 목록이 필요하면 dryRun 을 보면 된다.
+    unbound: dryRun || unbound.length <= 200 ? unbound : undefined,
     skipped: skipped,
     failed: failed,
   };

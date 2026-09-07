@@ -21,7 +21,7 @@ const ctx = createContext({
 runInContext(readFileSync("src/cursor_mcp_plugin/code.js", "utf8"), ctx);
 const { hardcodedProps, nearestComponent, paintsToValue, ancestorPath, collectBoundVars,
         resolveScanTargets, safeGet, applyLayoutSizing,
-        UNBIND_FIELDS, unbindVariable, getComponentProperties } = ctx;
+        UNBIND_FIELDS, unbindVariable, getComponentProperties, isOutsideComponent } = ctx;
 
 const solid = [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }];
 
@@ -235,6 +235,20 @@ assert.deepEqual(UNBIND_FIELDS.strokeWeight, [
 // cornerRadius 는 BIND_FIELDS 에서 그대로 물려받는다 — 네 모서리 동시
 assert.deepEqual(UNBIND_FIELDS.cornerRadius,
   ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"]);
+assert.deepEqual(UNBIND_FIELDS.padding,
+  ["paddingLeft", "paddingRight", "paddingTop", "paddingBottom"]);
+
+// 문서 프레임 판정. nearestComponent 는 node.parent 부터 보므로 COMPONENT_SET 자신도
+// component:null 이 나온다 — 타입을 따로 안 걸면 컴포넌트를 문서로 오인해 건드린다.
+const docPage = { type: "PAGE", name: "Button" };
+const compSet = { type: "COMPONENT_SET", name: "Button", parent: docPage };
+assert.equal(isOutsideComponent(compSet), false, "COMPONENT_SET 자신은 문서가 아니다");
+assert.equal(isOutsideComponent({ type: "COMPONENT", name: "v", parent: compSet }), false);
+assert.equal(isOutsideComponent({ type: "INSTANCE", name: "i", parent: docPage }), false);
+// 컴포넌트 세트를 감싸는 문서 프레임은 대상이다
+assert.equal(isOutsideComponent({ type: "FRAME", name: "Menu-Component", parent: docPage }), true);
+// 컴포넌트 안의 프레임은 대상이 아니다
+assert.equal(isOutsideComponent({ type: "FRAME", name: "Container", parent: compSet }), false);
 
 ctx.figma.variables = { getVariableByIdAsync: async (id) => ({ name: "Sem/Scale / " + id }) };
 
