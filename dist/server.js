@@ -849,6 +849,57 @@ server.tool(
   }
 );
 server.tool(
+  "unbind_variable",
+  "Detach a variable binding from one property across many nodes \u2014 the reverse of bind_variable. The resolved value stays as a raw literal, so nothing re-renders. Use it to clear a binding that has no visual effect and cannot be reached from Figma's UI (e.g. a strokeWeight bound on a frame that has no stroke paint, which the Design panel never shows). property 'strokeWeight' also sweeps the four per-side fields (strokeTop/Bottom/Left/RightWeight); 'cornerRadius' sweeps all four corners; 'fills' clears the color binding of the first bound SOLID paint. Nodes with nothing bound are reported under skipped. Pass dryRun first.",
+  {
+    nodeIds: z.array(z.string()).describe("Node ids to unbind"),
+    property: z.string().describe("fills | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
+    dryRun: z.boolean().optional().describe("Report what would be cleared without writing")
+  },
+  async ({ nodeIds, property, dryRun }) => {
+    try {
+      const result = await sendCommandToFigma("unbind_variable", { nodeIds, property, dryRun });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error unbinding variable: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
+  "get_component_properties",
+  "Read componentPropertyDefinitions \u2014 the BOOLEAN, TEXT and INSTANCE_SWAP properties that get_local_components does not return (it gives variant axes only). Scope with nodeIds or pageName; one is required. Variant children are skipped because their definitions live on the parent COMPONENT_SET. Returns per component the full property map (type, defaultValue, variantOptions, preferredValues), the list of non-variant property names, and a byPropertyType rollup.",
+  {
+    nodeIds: z.array(z.string()).optional().describe("Component or component-set ids to read"),
+    pageName: z.string().optional().describe("Read every top-level component on this page instead")
+  },
+  async ({ nodeIds, pageName }) => {
+    try {
+      const result = await sendCommandToFigma("get_component_properties", { nodeIds, pageName });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting component properties: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "swap_instances_by_key",
   "Rebind instances to a different main component, given the target component key. This is the fix for orphan instances whose old library component no longer exists in the DS file. Pass viaNodeId \u2014 the id of a healthy instance whose component set contains the target variant \u2014 and the target is resolved from that set's siblings with no document scan. viaNodeId is REQUIRED in practice for `.`-prefixed (unpublished) components: importComponentByKeyAsync cannot fetch them and create_component_instance fails on them. Without viaNodeId it falls back to importComponentByKeyAsync, then to a document scan that stops at the first match. Pass dryRun first to see what would change.",
   {

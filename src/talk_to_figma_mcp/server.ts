@@ -1062,6 +1062,61 @@ server.tool(
   }
 );
 
+// Unbind Variable Tool (E-21)
+server.tool(
+  "unbind_variable",
+  "Detach a variable binding from one property across many nodes — the reverse of bind_variable. The resolved value stays as a raw literal, so nothing re-renders. Use it to clear a binding that has no visual effect and cannot be reached from Figma's UI (e.g. a strokeWeight bound on a frame that has no stroke paint, which the Design panel never shows). property 'strokeWeight' also sweeps the four per-side fields (strokeTop/Bottom/Left/RightWeight); 'cornerRadius' sweeps all four corners; 'fills' clears the color binding of the first bound SOLID paint. Nodes with nothing bound are reported under skipped. Pass dryRun first.",
+  {
+    nodeIds: z.array(z.string()).describe("Node ids to unbind"),
+    property: z.string().describe("fills | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
+    dryRun: z.boolean().optional().describe("Report what would be cleared without writing"),
+  },
+  async ({ nodeIds, property, dryRun }: any) => {
+    try {
+      const result = await sendCommandToFigma("unbind_variable", { nodeIds, property, dryRun });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error unbinding variable: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Get Component Properties Tool (E-22)
+server.tool(
+  "get_component_properties",
+  "Read componentPropertyDefinitions — the BOOLEAN, TEXT and INSTANCE_SWAP properties that get_local_components does not return (it gives variant axes only). Scope with nodeIds or pageName; one is required. Variant children are skipped because their definitions live on the parent COMPONENT_SET. Returns per component the full property map (type, defaultValue, variantOptions, preferredValues), the list of non-variant property names, and a byPropertyType rollup.",
+  {
+    nodeIds: z.array(z.string()).optional().describe("Component or component-set ids to read"),
+    pageName: z.string().optional().describe("Read every top-level component on this page instead"),
+  },
+  async ({ nodeIds, pageName }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_component_properties", { nodeIds, pageName });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error getting component properties: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Swap Instances By Key Tool (E-17)
 server.tool(
   "swap_instances_by_key",
@@ -3342,6 +3397,8 @@ type FigmaCommand =
   | "rename_variant_property"
   | "swap_instances_by_key"
   | "bind_variable"
+  | "unbind_variable"
+  | "get_component_properties"
   | "get_local_components"
   | "get_local_variables"
   | "get_variable_bindings"

@@ -255,6 +255,10 @@ async function handleCommand(command, params) {
       return await swapInstancesByKey(params);
     case "bind_variable":
       return await bindVariable(params);
+    case "unbind_variable":
+      return await unbindVariable(params);
+    case "get_component_properties":
+      return await getComponentProperties(params);
     case "set_item_spacing":
       return await setItemSpacing(params);
     case "get_reactions":
@@ -6410,6 +6414,230 @@ async function bindVariable(params) {
     failedCount: failed.length,
     bound: bound,
     skipped: skipped,
+    failed: failed,
+  };
+}
+
+// ── E-21: unbind_variable ───────────────────────────────────────────────────
+// bind_variable 의 반대. 노드 여러 개의 한 속성에서 변수 바인딩을 떼어낸다.
+// 값은 그대로 남는다(해제 시점의 해석값이 raw 로 굳는다) — 렌더는 바뀌지 않는다.
+// ★ strokeWeight 는 네 변이 따로 바인딩돼 있을 수 있어 per-side 필드까지 함께 훑는다.
+//   (2026-09-07 Button 계열 27건이 정확히 이 경우였다: strokeTop/Bottom/Left/RightWeight)
+var UNBIND_FIELDS = Object.assign({}, BIND_FIELDS, {
+  strokeWeight: [
+    "strokeWeight",
+    "strokeTopWeight",
+    "strokeBottomWeight",
+    "strokeLeftWeight",
+    "strokeRightWeight",
+  ],
+});
+
+async function unbindVariable(params) {
+  params = params || {};
+  var nodeIds = params.nodeIds;
+  var property = params.property;
+  var dryRun = params.dryRun === true;
+
+  if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("Missing or invalid nodeIds parameter");
+  }
+  if (!property) throw new Error("Missing property parameter");
+  if (property !== "fills" && !UNBIND_FIELDS[property]) {
+    throw new Error(
+      "Unsupported property: " + property + ". Supported: fills, " + Object.keys(UNBIND_FIELDS).join(", ")
+    );
+  }
+
+  var fields = UNBIND_FIELDS[property] || [];
+  var nameCache = {};
+  async function variableLabel(id) {
+    if (!id) return null;
+    if (nameCache[id] !== undefined) return nameCache[id];
+    var label = id;
+    try {
+      var v = await figma.variables.getVariableByIdAsync(id);
+      if (v) label = v.name;
+    } catch (e) { /* 지워진 변수면 id 그대로 둔다 */ }
+    nameCache[id] = label;
+    return label;
+  }
+
+  var unbound = [];
+  var skipped = [];
+  var failed = [];
+
+  for (var i = 0; i < nodeIds.length; i++) {
+    var id = nodeIds[i];
+    var node;
+    try {
+      node = await figma.getNodeByIdAsync(id);
+    } catch (e) {
+      failed.push({ nodeId: id, reason: e.message });
+      continue;
+    }
+    if (!node) {
+      failed.push({ nodeId: id, reason: "Node not found" });
+      continue;
+    }
+    if (typeof node.setBoundVariable !== "function") {
+      failed.push({ nodeId: id, name: node.name, reason: "Node type " + node.type + " cannot bind variables" });
+      continue;
+    }
+
+    try {
+      if (property === "fills") {
+        var fills = node.fills;
+        if (fills === figma.mixed || !Array.isArray(fills) || fills.length === 0) {
+          skipped.push({ nodeId: id, name: node.name, reason: "no fills / mixed" });
+          continue;
+        }
+        var idx = -1;
+        for (var f = 0; f < fills.length; f++) {
+          if (fills[f].type === "SOLID" && fills[f].boundVariables && fills[f].boundVariables.color) { idx = f; break; }
+        }
+        if (idx === -1) {
+          skipped.push({ nodeId: id, name: node.name, reason: "not bound" });
+          continue;
+        }
+        var was = await variableLabel(fills[idx].boundVariables.color.id);
+        if (dryRun) {
+          unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: ["fills[].color"], variable: was, dryRun: true });
+          continue;
+        }
+        var next = fills.slice();
+        next[idx] = figma.variables.setBoundVariableForPaint(next[idx], "color", null);
+        node.fills = next;
+        unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: ["fills[].color"], variable: was });
+      } else {
+        var hit = [];
+        var wasNames = [];
+        for (var g = 0; g < fields.length; g++) {
+          var fl = fields[g];
+          if (node.boundVariables && node.boundVariables[fl]) {
+            hit.push(fl);
+            var nm = await variableLabel(node.boundVariables[fl].id);
+            if (wasNames.indexOf(nm) === -1) wasNames.push(nm);
+          }
+        }
+        if (hit.length === 0) {
+          skipped.push({ nodeId: id, name: node.name, reason: "not bound" });
+          continue;
+        }
+        if (dryRun) {
+          unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: hit, variable: wasNames.join(", "), dryRun: true });
+          continue;
+        }
+        for (var h = 0; h < hit.length; h++) {
+          node.setBoundVariable(hit[h], null);
+        }
+        unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: hit, variable: wasNames.join(", ") });
+      }
+    } catch (e) {
+      failed.push({ nodeId: id, name: node.name, reason: e.message });
+    }
+  }
+
+  return {
+    property: property,
+    fieldsScanned: property === "fills" ? ["fills[].color"] : fields,
+    dryRun: dryRun,
+    requested: nodeIds.length,
+    unboundCount: unbound.length,
+    skippedCount: skipped.length,
+    failedCount: failed.length,
+    unbound: unbound,
+    skipped: skipped,
+    failed: failed,
+  };
+}
+
+// ── E-22: get_component_properties ──────────────────────────────────────────
+// componentPropertyDefinitions 를 읽는 유일한 커맨드.
+// get_local_components 는 variantProperties(변이 축)만 주고 BOOLEAN·TEXT·INSTANCE_SWAP 은 안 준다.
+// 범위: nodeIds(명시) 또는 pageName(그 페이지의 최상위 컴포넌트 전부). 둘 중 하나는 필수.
+// ⚠️ 변이 COMPONENT(부모가 COMPONENT_SET)는 자신의 정의를 갖지 않는다 — 세트가 갖는다. 그래서 건너뛴다.
+async function getComponentProperties(params) {
+  params = params || {};
+  var targets = [];
+
+  if (params.nodeIds && Array.isArray(params.nodeIds) && params.nodeIds.length) {
+    for (var i = 0; i < params.nodeIds.length; i++) {
+      var n = await figma.getNodeByIdAsync(params.nodeIds[i]);
+      if (n) targets.push(n);
+      else targets.push({ __missing: params.nodeIds[i] });
+    }
+  } else if (params.pageName) {
+    await figma.loadAllPagesAsync();
+    var page = figma.root.children.filter(function (p) { return p.name === params.pageName; })[0];
+    if (!page) throw new Error("Page not found: " + params.pageName);
+    var stack = page.children.slice();
+    while (stack.length) {
+      var node = stack.shift();
+      if (node.type === "COMPONENT_SET") { targets.push(node); continue; } // 세트 안 변이는 안 내려간다
+      if (node.type === "COMPONENT") { targets.push(node); continue; }
+      if (node.children) stack = stack.concat(node.children);
+    }
+  } else {
+    throw new Error("Missing scope: pass nodeIds or pageName");
+  }
+
+  var results = [];
+  var failed = [];
+  var summary = { VARIANT: 0, BOOLEAN: 0, TEXT: 0, INSTANCE_SWAP: 0 };
+  var withNonVariant = 0;
+
+  for (var j = 0; j < targets.length; j++) {
+    var t = targets[j];
+    if (t.__missing) { failed.push({ nodeId: t.__missing, reason: "Node not found" }); continue; }
+    if (t.type !== "COMPONENT" && t.type !== "COMPONENT_SET") {
+      failed.push({ nodeId: t.id, name: t.name, reason: "Not a component: " + t.type });
+      continue;
+    }
+    // 변이는 정의를 갖지 않는다
+    if (t.type === "COMPONENT" && t.parent && t.parent.type === "COMPONENT_SET") continue;
+
+    var defs;
+    try {
+      defs = t.componentPropertyDefinitions;
+    } catch (e) {
+      failed.push({ nodeId: t.id, name: t.name, reason: e.message });
+      continue;
+    }
+
+    var props = {};
+    var nonVariant = [];
+    for (var key in defs) {
+      if (!Object.prototype.hasOwnProperty.call(defs, key)) continue;
+      var d = defs[key];
+      var entry = { type: d.type, defaultValue: d.defaultValue };
+      if (d.variantOptions) entry.variantOptions = d.variantOptions;
+      if (d.preferredValues) entry.preferredValues = d.preferredValues;
+      props[key] = entry;
+      if (summary[d.type] === undefined) summary[d.type] = 0;
+      summary[d.type]++;
+      if (d.type !== "VARIANT") nonVariant.push(key);
+    }
+    if (nonVariant.length) withNonVariant++;
+
+    results.push({
+      id: t.id,
+      name: t.name,
+      type: t.type,
+      page: (function (n) { while (n && n.type !== "PAGE") n = n.parent; return n ? n.name : null; })(t),
+      propertyCount: Object.keys(props).length,
+      nonVariant: nonVariant,
+      properties: props,
+    });
+  }
+
+  return {
+    scope: params.nodeIds ? "nodeIds" : ("page:" + params.pageName),
+    scanned: results.length,
+    withNonVariantProps: withNonVariant,
+    byPropertyType: summary,
+    failedCount: failed.length,
+    components: results,
     failed: failed,
   };
 }
