@@ -872,10 +872,10 @@ server.tool(
 );
 server.tool(
   "unbind_variable",
-  "Detach a variable binding from one property across many nodes \u2014 the reverse of bind_variable. The resolved value stays as a raw literal, so nothing re-renders. Use it to clear a binding that has no visual effect and cannot be reached from Figma's UI (e.g. a strokeWeight bound on a frame that has no stroke paint, which the Design panel never shows). property 'strokeWeight' also sweeps the four per-side fields (strokeTop/Bottom/Left/RightWeight); 'cornerRadius' sweeps all four corners; 'fills' clears the color binding of the first bound SOLID paint. Nodes with nothing bound are reported under skipped. Pass dryRun first.",
+  "Detach a variable binding from one property across many nodes \u2014 the reverse of bind_variable. The resolved value stays as a raw literal, so nothing re-renders. Use it to clear a binding that has no visual effect and cannot be reached from Figma's UI (e.g. a strokeWeight bound on a frame that has no stroke paint, which the Design panel never shows). property 'strokeWeight' also sweeps the four per-side fields (strokeTop/Bottom/Left/RightWeight); 'cornerRadius' sweeps all four corners. Colors ('fills') are not supported yet. Nodes with nothing bound are reported under skipped. Pass dryRun first.",
   {
     nodeIds: import_zod.z.array(import_zod.z.string()).describe("Node ids to unbind"),
-    property: import_zod.z.string().describe("fills | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
+    property: import_zod.z.string().describe("itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
     dryRun: import_zod.z.boolean().optional().describe("Report what would be cleared without writing")
   },
   async ({ nodeIds, property, dryRun }) => {

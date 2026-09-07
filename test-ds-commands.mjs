@@ -20,7 +20,8 @@ const ctx = createContext({
 });
 runInContext(readFileSync("src/cursor_mcp_plugin/code.js", "utf8"), ctx);
 const { hardcodedProps, nearestComponent, paintsToValue, ancestorPath, collectBoundVars,
-        resolveScanTargets, safeGet, applyLayoutSizing } = ctx;
+        resolveScanTargets, safeGet, applyLayoutSizing,
+        UNBIND_FIELDS, unbindVariable, getComponentProperties } = ctx;
 
 const solid = [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }];
 
@@ -220,5 +221,63 @@ assert.throws(
 const untouched = { type: "TEXT", parent: autoParent };
 applyLayoutSizing(untouched);
 assert.equal(untouched.layoutSizingHorizontal, undefined);
+
+// ── E-21 unbind_variable ────────────────────────────────────────────────────
+// 굵기는 네 변이 따로 묶여 있는 경우가 흔하다. 균일 필드만 훑으면 전부 놓치는데,
+// 렌더가 안 바뀌어서 회귀해도 아무도 눈치채지 못한다 — 그래서 여기서 못박는다.
+assert.deepEqual(UNBIND_FIELDS.strokeWeight, [
+  "strokeWeight",
+  "strokeTopWeight",
+  "strokeBottomWeight",
+  "strokeLeftWeight",
+  "strokeRightWeight",
+]);
+// cornerRadius 는 BIND_FIELDS 에서 그대로 물려받는다 — 네 모서리 동시
+assert.deepEqual(UNBIND_FIELDS.cornerRadius,
+  ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"]);
+
+ctx.figma.variables = { getVariableByIdAsync: async (id) => ({ name: "Sem/Scale / " + id }) };
+
+// 묶인 변만 골라 끊고, 안 묶인 노드는 skipped 로 빠진다
+const bound = {
+  id: "1:1", name: "variant", type: "COMPONENT", cleared: [],
+  boundVariables: { strokeTopWeight: { id: "x_25" }, strokeBottomWeight: { id: "x_25" } },
+  setBoundVariable(f, v) { assert.equal(v, null); this.cleared.push(f); },
+};
+const loose = { id: "2:2", name: "plain", type: "COMPONENT", boundVariables: {}, setBoundVariable() {} };
+ctx.figma.getNodeByIdAsync = async (id) => ({ "1:1": bound, "2:2": loose })[id] || null;
+
+let r = await unbindVariable({ nodeIds: ["1:1", "2:2", "9:9"], property: "strokeWeight", dryRun: true });
+assert.deepEqual(r.unbound.map((u) => u.cleared), [["strokeTopWeight", "strokeBottomWeight"]]);
+assert.equal(r.unbound[0].variable, "Sem/Scale / x_25");
+assert.equal(r.skipped[0].reason, "not bound");
+assert.deepEqual(r.failed, [{ nodeId: "9:9", reason: "Node not found" }]);
+assert.deepEqual(bound.cleared, [], "dryRun 은 쓰지 않는다");
+
+r = await unbindVariable({ nodeIds: ["1:1"], property: "strokeWeight" });
+assert.deepEqual(bound.cleared, ["strokeTopWeight", "strokeBottomWeight"]);
+// 지원 안 하는 property 는 거부한다 (fills 는 아직 안 받는다)
+await assert.rejects(unbindVariable({ nodeIds: ["1:1"], property: "fills" }), /Unsupported property/);
+
+// ── E-22 get_component_properties ───────────────────────────────────────────
+// 변이 자식은 자기 정의를 갖지 않는다(부모 세트가 갖는다) — 세면 중복이 된다
+const btnSet = {
+  id: "3:1", name: "Button", type: "COMPONENT_SET", parent: { type: "PAGE", name: "Button" },
+  componentPropertyDefinitions: {
+    Type: { type: "VARIANT", defaultValue: "Filled", variantOptions: ["Filled", "Ghost"] },
+    "Label#1:2": { type: "TEXT", defaultValue: "라벨" },
+  },
+};
+const variantChild = { id: "3:2", name: "Type=Filled", type: "COMPONENT", parent: btnSet };
+ctx.figma.getNodeByIdAsync = async (id) => ({ "3:1": btnSet, "3:2": variantChild })[id] || null;
+
+const cp = await getComponentProperties({ nodeIds: ["3:1", "3:2"] });
+assert.equal(cp.scanned, 1, "변이 자식은 건너뛴다");
+assert.deepEqual(cp.components[0].nonVariant, ["Label#1:2"]);
+assert.deepEqual(cp.byPropertyType, { VARIANT: 1, BOOLEAN: 0, TEXT: 1, INSTANCE_SWAP: 0 });
+assert.equal(cp.withNonVariantProps, 1);
+assert.equal(cp.components[0].page, "Button");
+
+await assert.rejects(getComponentProperties({}), /Missing scope/);
 
 console.log("all checks passed");

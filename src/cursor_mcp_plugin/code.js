@@ -6420,6 +6420,7 @@ async function bindVariable(params) {
 
 // ── E-21: unbind_variable ───────────────────────────────────────────────────
 // bind_variable 의 반대. 노드 여러 개의 한 속성에서 변수 바인딩을 떼어낸다.
+// fills(색) 는 아직 안 받는다 — 필요해지면 그때 넣는다.
 // 값은 그대로 남는다(해제 시점의 해석값이 raw 로 굳는다) — 렌더는 바뀌지 않는다.
 // ★ strokeWeight 는 네 변이 따로 바인딩돼 있을 수 있어 per-side 필드까지 함께 훑는다.
 //   (2026-09-07 Button 계열 27건이 정확히 이 경우였다: strokeTop/Bottom/Left/RightWeight)
@@ -6443,24 +6444,20 @@ async function unbindVariable(params) {
     throw new Error("Missing or invalid nodeIds parameter");
   }
   if (!property) throw new Error("Missing property parameter");
-  if (property !== "fills" && !UNBIND_FIELDS[property]) {
+  if (!UNBIND_FIELDS[property]) {
     throw new Error(
-      "Unsupported property: " + property + ". Supported: fills, " + Object.keys(UNBIND_FIELDS).join(", ")
+      "Unsupported property: " + property + ". Supported: " + Object.keys(UNBIND_FIELDS).join(", ")
     );
   }
 
-  var fields = UNBIND_FIELDS[property] || [];
-  var nameCache = {};
+  var fields = UNBIND_FIELDS[property];
   async function variableLabel(id) {
     if (!id) return null;
-    if (nameCache[id] !== undefined) return nameCache[id];
-    var label = id;
     try {
       var v = await figma.variables.getVariableByIdAsync(id);
-      if (v) label = v.name;
+      if (v) return v.name;
     } catch (e) { /* 지워진 변수면 id 그대로 둔다 */ }
-    nameCache[id] = label;
-    return label;
+    return id;
   }
 
   var unbound = [];
@@ -6486,53 +6483,29 @@ async function unbindVariable(params) {
     }
 
     try {
-      if (property === "fills") {
-        var fills = node.fills;
-        if (fills === figma.mixed || !Array.isArray(fills) || fills.length === 0) {
-          skipped.push({ nodeId: id, name: node.name, reason: "no fills / mixed" });
-          continue;
+      var hit = [];
+      var wasNames = [];
+      for (var g = 0; g < fields.length; g++) {
+        var fl = fields[g];
+        if (node.boundVariables && node.boundVariables[fl]) {
+          hit.push(fl);
+          // 변마다 다른 변수에 묶일 수 있다(top 만 x_5 등) — 첫 것만 보고하면 틀린다
+          var nm = await variableLabel(node.boundVariables[fl].id);
+          if (wasNames.indexOf(nm) === -1) wasNames.push(nm);
         }
-        var idx = -1;
-        for (var f = 0; f < fills.length; f++) {
-          if (fills[f].type === "SOLID" && fills[f].boundVariables && fills[f].boundVariables.color) { idx = f; break; }
-        }
-        if (idx === -1) {
-          skipped.push({ nodeId: id, name: node.name, reason: "not bound" });
-          continue;
-        }
-        var was = await variableLabel(fills[idx].boundVariables.color.id);
-        if (dryRun) {
-          unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: ["fills[].color"], variable: was, dryRun: true });
-          continue;
-        }
-        var next = fills.slice();
-        next[idx] = figma.variables.setBoundVariableForPaint(next[idx], "color", null);
-        node.fills = next;
-        unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: ["fills[].color"], variable: was });
-      } else {
-        var hit = [];
-        var wasNames = [];
-        for (var g = 0; g < fields.length; g++) {
-          var fl = fields[g];
-          if (node.boundVariables && node.boundVariables[fl]) {
-            hit.push(fl);
-            var nm = await variableLabel(node.boundVariables[fl].id);
-            if (wasNames.indexOf(nm) === -1) wasNames.push(nm);
-          }
-        }
-        if (hit.length === 0) {
-          skipped.push({ nodeId: id, name: node.name, reason: "not bound" });
-          continue;
-        }
-        if (dryRun) {
-          unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: hit, variable: wasNames.join(", "), dryRun: true });
-          continue;
-        }
-        for (var h = 0; h < hit.length; h++) {
-          node.setBoundVariable(hit[h], null);
-        }
-        unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: hit, variable: wasNames.join(", ") });
       }
+      if (hit.length === 0) {
+        skipped.push({ nodeId: id, name: node.name, reason: "not bound" });
+        continue;
+      }
+      if (dryRun) {
+        unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: hit, variable: wasNames.join(", "), dryRun: true });
+        continue;
+      }
+      for (var h = 0; h < hit.length; h++) {
+        node.setBoundVariable(hit[h], null);
+      }
+      unbound.push({ nodeId: id, name: node.name, type: node.type, cleared: hit, variable: wasNames.join(", ") });
     } catch (e) {
       failed.push({ nodeId: id, name: node.name, reason: e.message });
     }
@@ -6540,7 +6513,7 @@ async function unbindVariable(params) {
 
   return {
     property: property,
-    fieldsScanned: property === "fills" ? ["fills[].color"] : fields,
+    fieldsScanned: fields,
     dryRun: dryRun,
     requested: nodeIds.length,
     unboundCount: unbound.length,
@@ -6561,11 +6534,13 @@ async function getComponentProperties(params) {
   params = params || {};
   var targets = [];
 
+  var failed = [];
+
   if (params.nodeIds && Array.isArray(params.nodeIds) && params.nodeIds.length) {
     for (var i = 0; i < params.nodeIds.length; i++) {
       var n = await figma.getNodeByIdAsync(params.nodeIds[i]);
       if (n) targets.push(n);
-      else targets.push({ __missing: params.nodeIds[i] });
+      else failed.push({ nodeId: params.nodeIds[i], reason: "Node not found" });
     }
   } else if (params.pageName) {
     await figma.loadAllPagesAsync();
@@ -6583,13 +6558,11 @@ async function getComponentProperties(params) {
   }
 
   var results = [];
-  var failed = [];
   var summary = { VARIANT: 0, BOOLEAN: 0, TEXT: 0, INSTANCE_SWAP: 0 };
   var withNonVariant = 0;
 
   for (var j = 0; j < targets.length; j++) {
     var t = targets[j];
-    if (t.__missing) { failed.push({ nodeId: t.__missing, reason: "Node not found" }); continue; }
     if (t.type !== "COMPONENT" && t.type !== "COMPONENT_SET") {
       failed.push({ nodeId: t.id, name: t.name, reason: "Not a component: " + t.type });
       continue;
@@ -6614,8 +6587,7 @@ async function getComponentProperties(params) {
       if (d.variantOptions) entry.variantOptions = d.variantOptions;
       if (d.preferredValues) entry.preferredValues = d.preferredValues;
       props[key] = entry;
-      if (summary[d.type] === undefined) summary[d.type] = 0;
-      summary[d.type]++;
+      summary[d.type] = (summary[d.type] || 0) + 1;
       if (d.type !== "VARIANT") nonVariant.push(key);
     }
     if (nonVariant.length) withNonVariant++;
@@ -6625,7 +6597,6 @@ async function getComponentProperties(params) {
       name: t.name,
       type: t.type,
       page: (function (n) { while (n && n.type !== "PAGE") n = n.parent; return n ? n.name : null; })(t),
-      propertyCount: Object.keys(props).length,
       nonVariant: nonVariant,
       properties: props,
     });
