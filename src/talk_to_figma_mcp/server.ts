@@ -3445,6 +3445,7 @@ type FigmaCommand =
   | "select_hardcoded"
   | "set_image_fill"
   | "rename_node"
+  | "set_component_description"
   | "create_section"
   | "set_parent";
 
@@ -3603,6 +3604,9 @@ type CommandParams = {
   rename_node: {
     nodeId: string;
     name: string;
+  };
+  set_component_description: {
+    items: { nodeId: string; description: string }[];
   };
   create_section: {
     x: number;
@@ -3998,6 +4002,53 @@ server.tool(
             type: "text",
             text: `Error setting image fill: ${error instanceof Error ? error.message : String(error)
               }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// E-23: Set Component Description Tool
+server.tool(
+  "set_component_description",
+  "Set the description of COMPONENT / COMPONENT_SET nodes — the text shown in the assets panel and Dev Mode. This is the only way to write descriptions; get_local_components can only read them. Send several at once via items; each is applied independently and reported back.",
+  {
+    items: z
+      .array(
+        z.object({
+          nodeId: z.string().describe("COMPONENT or COMPONENT_SET node id"),
+          description: z.string().describe("New description. Pass an empty string to clear it."),
+        })
+      )
+      .min(1)
+      .describe("Components to update"),
+  },
+  async ({ items }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_component_description", { items });
+      const typed = result as {
+        applied: number;
+        failed: number;
+        results: { nodeId: string; name?: string; ok: boolean; error?: string }[];
+      };
+      const lines = typed.results.map((r) =>
+        r.ok ? `OK   ${r.nodeId}  ${r.name ?? ""}` : `FAIL ${r.nodeId}  ${r.error ?? "unknown"}`
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: [`applied ${typed.applied}, failed ${typed.failed}`, ...lines].join("\n"),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting component description: ${error instanceof Error ? error.message : String(error)}`,
           },
         ],
       };

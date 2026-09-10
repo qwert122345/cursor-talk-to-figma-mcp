@@ -3088,6 +3088,44 @@ server.tool(
   }
 );
 server.tool(
+  "set_component_description",
+  "Set the description of COMPONENT / COMPONENT_SET nodes \u2014 the text shown in the assets panel and Dev Mode. This is the only way to write descriptions; get_local_components can only read them. Send several at once via items; each is applied independently and reported back.",
+  {
+    items: import_zod.z.array(
+      import_zod.z.object({
+        nodeId: import_zod.z.string().describe("COMPONENT or COMPONENT_SET node id"),
+        description: import_zod.z.string().describe("New description. Pass an empty string to clear it.")
+      })
+    ).min(1).describe("Components to update")
+  },
+  async ({ items }) => {
+    try {
+      const result = await sendCommandToFigma("set_component_description", { items });
+      const typed = result;
+      const lines = typed.results.map(
+        (r) => r.ok ? `OK   ${r.nodeId}  ${r.name ?? ""}` : `FAIL ${r.nodeId}  ${r.error ?? "unknown"}`
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: [`applied ${typed.applied}, failed ${typed.failed}`, ...lines].join("\n")
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting component description: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "rename_node",
   "Rename a node in Figma",
   {

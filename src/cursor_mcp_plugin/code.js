@@ -280,6 +280,8 @@ async function handleCommand(command, params) {
       return await setImageFill(params);
     case "rename_node":
       return await renameNode(params);
+    case "set_component_description":
+      return await setComponentDescription(params);
     case "create_section":
       return await createSection(params);
     case "set_parent":
@@ -1181,6 +1183,62 @@ function base64ToUint8Array(base64) {
   }
 
   return bytes.slice(0, byteIndex);
+}
+
+// E-23: 컴포넌트 description 쓰기. 읽기는 get_local_components 가 하지만 쓰는 수단이 없었다.
+async function setComponentDescription(params) {
+  const { items } = params || {};
+
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error("Missing items parameter (expected a non-empty array)");
+  }
+
+  const results = [];
+  let applied = 0;
+
+  for (const item of items) {
+    const nodeId = item && item.nodeId;
+    const description = item && item.description;
+
+    if (!nodeId) {
+      results.push({ nodeId: String(nodeId), ok: false, error: "Missing nodeId" });
+      continue;
+    }
+    if (typeof description !== "string") {
+      results.push({ nodeId, ok: false, error: "description must be a string" });
+      continue;
+    }
+
+    try {
+      const node = await figma.getNodeByIdAsync(nodeId);
+      if (!node) {
+        results.push({ nodeId, ok: false, error: "Node not found" });
+        continue;
+      }
+      // 변이 COMPONENT 는 description 을 못 가진다 — 정본은 부모 COMPONENT_SET 이다.
+      if (node.type === "COMPONENT" && node.parent && node.parent.type === "COMPONENT_SET") {
+        results.push({
+          nodeId,
+          name: node.name,
+          ok: false,
+          error: "Variant COMPONENT cannot hold a description; target its COMPONENT_SET instead",
+        });
+        continue;
+      }
+      if (node.type !== "COMPONENT" && node.type !== "COMPONENT_SET") {
+        results.push({ nodeId, name: node.name, ok: false, error: "Not a COMPONENT or COMPONENT_SET (" + node.type + ")" });
+        continue;
+      }
+
+      node.description = description;
+      applied++;
+      results.push({ nodeId, name: node.name, ok: true });
+    } catch (error) {
+      results.push({ nodeId, ok: false, error: error.message });
+    }
+  }
+
+  return { applied, failed: results.length - applied, results };
 }
 
 async function renameNode(params) {
