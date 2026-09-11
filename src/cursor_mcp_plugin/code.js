@@ -1464,8 +1464,31 @@ async function gridLayout(params) {
         var tried = [];
         var done = false;
 
+        // ★ 2026-09-11 규명: 세 형태가 전부 같은 오류
+        // (`Property "rowIndex" failed validation: Expected number, received object`)를 냈다.
+        // 첫 인자가 rowIndex 로 검증된다는 뜻 — 즉 이 메서드는 부모가 아니라 **자식 자신**의 것이다.
+        // discovered 의 frame·child 목록이 똑같았던 것도 같은 프로토타입에 있다는 신호였다.
+        if (typeof child.setGridChildPosition === "function") {
+          try {
+            child.setGridChildPosition(rowIndex, columnIndex);
+            done = true;
+            tried.push("child.setGridChildPosition(row,col): ok");
+          } catch (e0) {
+            tried.push("child.setGridChildPosition(row,col): " + e0.message);
+          }
+          if (!done) {
+            try {
+              child.setGridChildPosition({ rowIndex: rowIndex, columnIndex: columnIndex });
+              done = true;
+              tried.push("child.setGridChildPosition({rowIndex,columnIndex}): ok");
+            } catch (e0b) {
+              tried.push("child.setGridChildPosition({...}): " + e0b.message);
+            }
+          }
+        }
+
         // ① 객체 인자 + 정규화한 키
-        try {
+        if (!done) try {
           parent.setGridChildPosition(child, {
             rowIndex: rowIndex,
             columnIndex: columnIndex,
@@ -1473,9 +1496,9 @@ async function gridLayout(params) {
             columnSpan: columnSpan,
           });
           done = true;
-          tried.push("object(rowIndex,columnIndex,rowSpan,columnSpan): ok");
+          tried.push("parent object(rowIndex,columnIndex,rowSpan,columnSpan): ok");
         } catch (e1) {
-          tried.push("object(rowIndex,...): " + e1.message);
+          tried.push("parent object(rowIndex,...): " + e1.message);
         }
 
         // ② 위치 인자
@@ -1503,6 +1526,16 @@ async function gridLayout(params) {
         if (!done) {
           out.push({ nodeId: childId, name: child.name, ok: false, tried: tried });
           continue;
+        }
+
+        if (rowSpan !== 1 || columnSpan !== 1) {
+          try {
+            child.gridRowSpan = rowSpan;
+            child.gridColumnSpan = columnSpan;
+            tried.push("span assigned");
+          } catch (eS) {
+            tried.push("span: " + eS.message);
+          }
         }
 
         placed++;
