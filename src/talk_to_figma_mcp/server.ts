@@ -3610,10 +3610,10 @@ type CommandParams = {
     items: { nodeId: string; description: string }[];
   };
   grid_layout: {
-    op: "info" | "set";
+    op: "info" | "set" | "place";
     nodeId?: string;
     limit?: number;
-    items?: { nodeId: string; props: Record<string, unknown> }[];
+    items?: { nodeId: string; props?: Record<string, unknown>; position?: Record<string, unknown> }[];
   };
   create_section: {
     x: number;
@@ -4066,9 +4066,11 @@ server.tool(
 // E-24: Grid Layout Tool
 server.tool(
   "grid_layout",
-  "Read and write GRID auto-layout cell placement. Needed because cloning a cell inside a GRID frame makes the clone inherit the source's placement, so it lands stacked on the original and the table gains no row. op:\"info\" dumps the frame's grid properties, every child's placement, and a `discovered` list of the grid-related property/method names that actually exist on this Figma version — use it before writing. op:\"set\" assigns the grid* properties you pass (row/column anchor and span on children, row/column count on the frame); non-grid keys are refused. Deleting cells and replacing cell text already work without this tool.",
+  "Read and write GRID auto-layout cell placement. IMPORTANT: a child's gridRowAnchorIndex / gridColumnAnchorIndex are READ-ONLY, so op:\"place\" (which calls the parent frame's setGridChildPosition) is the only way to move a cell; op:\"set\" is for the frame's own gridRowCount / gridRowSizes. Needed because cloning a cell inside a GRID frame makes the clone inherit the source's placement, so it lands stacked on the original and the table gains no row. op:\"info\" dumps the frame's grid properties, every child's placement, and a `discovered` list of the grid-related property/method names that actually exist on this Figma version — use it before writing. op:\"set\" assigns the grid* properties you pass (row/column anchor and span on children, row/column count on the frame); non-grid keys are refused. Deleting cells and replacing cell text already work without this tool.",
   {
-    op: z.enum(["info", "set"]).describe('"info" to inspect, "set" to assign placement'),
+    op: z
+      .enum(["info", "set", "place"])
+      .describe('"info" to inspect, "set" to assign grid* properties, "place" to position a child in the grid'),
     nodeId: z.string().optional().describe("info: the GRID frame to inspect"),
     limit: z.number().optional().describe("info: max children to report (default 60)"),
     items: z
@@ -4077,13 +4079,20 @@ server.tool(
           nodeId: z.string().describe("Child cell, or the grid frame itself for row/column counts"),
           props: z
             .record(z.any())
+            .optional()
             .describe(
-              'grid* properties to assign, e.g. {"gridRowAnchorIndex":7,"gridColumnAnchorIndex":0}. Keys not starting with "grid" are refused.'
+              'set: grid* properties to assign on the FRAME, e.g. {"gridRowCount":10}. Keys not starting with "grid" are refused. Child anchors are read-only — use op:"place" for those.'
+            ),
+          position: z
+            .record(z.any())
+            .optional()
+            .describe(
+              'place: passed straight to parent.setGridChildPosition(child, position), e.g. {"rowAnchorIndex":7,"columnAnchorIndex":0,"rowSpan":1,"columnSpan":1}'
             ),
         })
       )
       .optional()
-      .describe("set: placements to apply, each reported independently"),
+      .describe("set/place: entries to apply, each reported independently"),
   },
   async ({ op, nodeId, limit, items }: any) => {
     try {

@@ -1409,7 +1409,67 @@ async function gridLayout(params) {
     return { op: "set", applied: applied, failed: results.length - applied, results: results };
   }
 
-  throw new Error('Missing or invalid op parameter (expected "info" or "set")');
+  // ★ grid 배치는 속성 대입으로 안 된다 — gridRowAnchorIndex 등은 읽기 전용이고
+  // 부모 프레임의 setGridChildPosition(child, position) 이 유일한 경로다 (2026-09-11 실측).
+  if (op === "place") {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error("Missing items parameter (expected a non-empty array)");
+    }
+
+    var placed = 0;
+    var out = [];
+
+    for (var m = 0; m < items.length; m++) {
+      var it = items[m] || {};
+      var childId = it.nodeId;
+      var position = it.position;
+
+      if (!childId) {
+        out.push({ nodeId: String(childId), ok: false, error: "Missing nodeId" });
+        continue;
+      }
+      if (!position || typeof position !== "object") {
+        out.push({ nodeId: childId, ok: false, error: "Missing position object" });
+        continue;
+      }
+
+      try {
+        var child = await figma.getNodeByIdAsync(childId);
+        if (!child) {
+          out.push({ nodeId: childId, ok: false, error: "Node not found" });
+          continue;
+        }
+        var parent = child.parent;
+        if (!parent) {
+          out.push({ nodeId: childId, ok: false, error: "Node has no parent" });
+          continue;
+        }
+        if (typeof parent.setGridChildPosition !== "function") {
+          out.push({
+            nodeId: childId,
+            ok: false,
+            error: "Parent " + parent.type + " has no setGridChildPosition (is it a GRID frame?)",
+          });
+          continue;
+        }
+
+        parent.setGridChildPosition(child, position);
+        placed++;
+        out.push({
+          nodeId: childId,
+          name: child.name,
+          ok: true,
+          after: readNodeProps(child, GRID_CHILD_KEYS),
+        });
+      } catch (error) {
+        out.push({ nodeId: childId, ok: false, error: error.message });
+      }
+    }
+
+    return { op: "place", placed: placed, failed: out.length - placed, results: out };
+  }
+
+  throw new Error('Missing or invalid op parameter (expected "info", "set" or "place")');
 }
 
 async function renameNode(params) {
