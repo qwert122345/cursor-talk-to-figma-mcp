@@ -1453,12 +1453,64 @@ async function gridLayout(params) {
           continue;
         }
 
-        parent.setGridChildPosition(child, position);
+        // 인자 형태를 확정할 수 없어 양쪽을 다 시도한다.
+        // 2026-09-11 실측 오류: `Property "rowIndex" failed validation: Expected number, received object`
+        // → 키 이름은 rowIndex/columnIndex 이고, 객체인지 위치인자인지가 남은 갈림길이다.
+        var rowIndex = typeof position.rowIndex === "number" ? position.rowIndex : position.rowAnchorIndex;
+        var columnIndex = typeof position.columnIndex === "number" ? position.columnIndex : position.columnAnchorIndex;
+        var rowSpan = typeof position.rowSpan === "number" ? position.rowSpan : 1;
+        var columnSpan = typeof position.columnSpan === "number" ? position.columnSpan : 1;
+
+        var tried = [];
+        var done = false;
+
+        // ① 객체 인자 + 정규화한 키
+        try {
+          parent.setGridChildPosition(child, {
+            rowIndex: rowIndex,
+            columnIndex: columnIndex,
+            rowSpan: rowSpan,
+            columnSpan: columnSpan,
+          });
+          done = true;
+          tried.push("object(rowIndex,columnIndex,rowSpan,columnSpan): ok");
+        } catch (e1) {
+          tried.push("object(rowIndex,...): " + e1.message);
+        }
+
+        // ② 위치 인자
+        if (!done) {
+          try {
+            parent.setGridChildPosition(child, rowIndex, columnIndex, rowSpan, columnSpan);
+            done = true;
+            tried.push("positional(row,col,rowSpan,colSpan): ok");
+          } catch (e2) {
+            tried.push("positional(row,col,rowSpan,colSpan): " + e2.message);
+          }
+        }
+
+        // ③ 위치 인자 2개만
+        if (!done) {
+          try {
+            parent.setGridChildPosition(child, rowIndex, columnIndex);
+            done = true;
+            tried.push("positional(row,col): ok");
+          } catch (e3) {
+            tried.push("positional(row,col): " + e3.message);
+          }
+        }
+
+        if (!done) {
+          out.push({ nodeId: childId, name: child.name, ok: false, tried: tried });
+          continue;
+        }
+
         placed++;
         out.push({
           nodeId: childId,
           name: child.name,
           ok: true,
+          tried: tried,
           after: readNodeProps(child, GRID_CHILD_KEYS),
         });
       } catch (error) {
