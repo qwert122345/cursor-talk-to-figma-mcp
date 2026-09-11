@@ -282,6 +282,8 @@ async function handleCommand(command, params) {
       return await renameNode(params);
     case "set_component_description":
       return await setComponentDescription(params);
+    case "grid_layout":
+      return await gridLayout(params);
     case "create_section":
       return await createSection(params);
     case "set_parent":
@@ -1239,6 +1241,175 @@ async function setComponentDescription(params) {
   }
 
   return { applied, failed: results.length - applied, results };
+}
+
+// E-24: GRID 오토레이아웃의 셀 배치를 읽고 쓴다.
+// 왜 필요한가 — 가이드의 토큰 표(Container/*/Token)가 GRID 라서, 셀을 clone 하면
+// 클론이 원본의 grid 배치를 그대로 물려받아 같은 칸에 겹쳐 놓인다(표 높이도 안 는다).
+// 행을 늘리려면 배치(anchor/span)와 부모의 행 수를 지정해야 하는데 그 수단이 없었다.
+// 삭제와 텍스트 교체는 GRID 와 무관하게 잘 되므로, 부족한 건 "배치" 하나다.
+var GRID_FRAME_KEYS = [
+  "layoutMode",
+  "layoutWrap",
+  "gridRowCount",
+  "gridColumnCount",
+  "gridRowGap",
+  "gridColumnGap",
+  "gridRowSizes",
+  "gridColumnSizes",
+  "itemSpacing",
+  "counterAxisSpacing",
+];
+var GRID_CHILD_KEYS = [
+  "gridRowAnchorIndex",
+  "gridColumnAnchorIndex",
+  "gridRowSpan",
+  "gridColumnSpan",
+  "gridChildHorizontalAlign",
+  "gridChildVerticalAlign",
+  "layoutSizingHorizontal",
+  "layoutSizingVertical",
+];
+
+function readNodeProps(node, keys) {
+  var out = {};
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    try {
+      var v = node[k];
+      if (v !== undefined) out[k] = v;
+    } catch (e) {
+      // 노드 타입이 지원하지 않는 getter 는 던진다 — 없는 것으로 본다
+    }
+  }
+  return out;
+}
+
+// 이름을 추측해서 못 맞히는 경우에 대비해, 프로토타입 체인에서 grid 가 들어간
+// 속성·메서드 이름을 실제로 긁어온다. 한 번의 빌드로 진상을 알 수 있게 하는 장치다.
+function discoverGridMembers(node) {
+  var found = [];
+  try {
+    var proto = Object.getPrototypeOf(node);
+    while (proto) {
+      var names = Object.getOwnPropertyNames(proto);
+      for (var i = 0; i < names.length; i++) {
+        if (/grid/i.test(names[i]) && found.indexOf(names[i]) === -1) found.push(names[i]);
+      }
+      proto = Object.getPrototypeOf(proto);
+    }
+  } catch (e) {
+    // 프록시라 순회가 막히면 빈 배열로 둔다
+  }
+  return found.sort();
+}
+
+async function gridLayout(params) {
+  var op = params && params.op;
+  var nodeId = params && params.nodeId;
+  var items = params && params.items;
+  var limit = params && typeof params.limit === "number" ? params.limit : 60;
+
+  if (op === "info") {
+    if (!nodeId) throw new Error("Missing nodeId parameter");
+    var frame = await figma.getNodeByIdAsync(nodeId);
+    if (!frame) throw new Error("Node not found: " + nodeId);
+
+    var kids = frame.children || [];
+    var children = [];
+    for (var i = 0; i < kids.length && i < limit; i++) {
+      var kid = kids[i];
+      children.push({
+        id: kid.id,
+        name: kid.name,
+        type: kid.type,
+        index: i,
+        props: readNodeProps(kid, GRID_CHILD_KEYS),
+      });
+    }
+
+    return {
+      op: "info",
+      nodeId: frame.id,
+      name: frame.name,
+      type: frame.type,
+      childCount: kids.length,
+      returned: children.length,
+      frame: readNodeProps(frame, GRID_FRAME_KEYS),
+      discovered: {
+        frame: discoverGridMembers(frame),
+        child: kids.length ? discoverGridMembers(kids[0]) : [],
+      },
+      children: children,
+    };
+  }
+
+  if (op === "set") {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error("Missing items parameter (expected a non-empty array)");
+    }
+
+    var results = [];
+    var applied = 0;
+
+    for (var j = 0; j < items.length; j++) {
+      var item = items[j] || {};
+      var targetId = item.nodeId;
+      var props = item.props;
+
+      if (!targetId) {
+        results.push({ nodeId: String(targetId), ok: false, error: "Missing nodeId" });
+        continue;
+      }
+      if (!props || typeof props !== "object") {
+        results.push({ nodeId: targetId, ok: false, error: "Missing props object" });
+        continue;
+      }
+
+      try {
+        var node = await figma.getNodeByIdAsync(targetId);
+        if (!node) {
+          results.push({ nodeId: targetId, ok: false, error: "Node not found" });
+          continue;
+        }
+
+        var set = {};
+        var skipped = [];
+        var keys = Object.keys(props);
+        for (var k = 0; k < keys.length; k++) {
+          var key = keys[k];
+          // grid 관련 속성만 허용한다 — 임의 속성 setter 가 되면 위험하다
+          if (!/^grid/i.test(key)) {
+            skipped.push(key + " (not a grid* property)");
+            continue;
+          }
+          try {
+            node[key] = props[key];
+            set[key] = props[key];
+          } catch (e) {
+            skipped.push(key + " (" + e.message + ")");
+          }
+        }
+
+        var ok = Object.keys(set).length > 0;
+        if (ok) applied++;
+        results.push({
+          nodeId: targetId,
+          name: node.name,
+          ok: ok,
+          set: set,
+          skipped: skipped,
+          after: readNodeProps(node, GRID_CHILD_KEYS.concat(GRID_FRAME_KEYS)),
+        });
+      } catch (error) {
+        results.push({ nodeId: targetId, ok: false, error: error.message });
+      }
+    }
+
+    return { op: "set", applied: applied, failed: results.length - applied, results: results };
+  }
+
+  throw new Error('Missing or invalid op parameter (expected "info" or "set")');
 }
 
 async function renameNode(params) {

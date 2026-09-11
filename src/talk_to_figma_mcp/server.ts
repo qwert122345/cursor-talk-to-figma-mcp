@@ -3446,6 +3446,7 @@ type FigmaCommand =
   | "set_image_fill"
   | "rename_node"
   | "set_component_description"
+  | "grid_layout"
   | "create_section"
   | "set_parent";
 
@@ -3607,6 +3608,12 @@ type CommandParams = {
   };
   set_component_description: {
     items: { nodeId: string; description: string }[];
+  };
+  grid_layout: {
+    op: "info" | "set";
+    nodeId?: string;
+    limit?: number;
+    items?: { nodeId: string; props: Record<string, unknown> }[];
   };
   create_section: {
     x: number;
@@ -4049,6 +4056,47 @@ server.tool(
           {
             type: "text",
             text: `Error setting component description: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// E-24: Grid Layout Tool
+server.tool(
+  "grid_layout",
+  "Read and write GRID auto-layout cell placement. Needed because cloning a cell inside a GRID frame makes the clone inherit the source's placement, so it lands stacked on the original and the table gains no row. op:\"info\" dumps the frame's grid properties, every child's placement, and a `discovered` list of the grid-related property/method names that actually exist on this Figma version — use it before writing. op:\"set\" assigns the grid* properties you pass (row/column anchor and span on children, row/column count on the frame); non-grid keys are refused. Deleting cells and replacing cell text already work without this tool.",
+  {
+    op: z.enum(["info", "set"]).describe('"info" to inspect, "set" to assign placement'),
+    nodeId: z.string().optional().describe("info: the GRID frame to inspect"),
+    limit: z.number().optional().describe("info: max children to report (default 60)"),
+    items: z
+      .array(
+        z.object({
+          nodeId: z.string().describe("Child cell, or the grid frame itself for row/column counts"),
+          props: z
+            .record(z.any())
+            .describe(
+              'grid* properties to assign, e.g. {"gridRowAnchorIndex":7,"gridColumnAnchorIndex":0}. Keys not starting with "grid" are refused.'
+            ),
+        })
+      )
+      .optional()
+      .describe("set: placements to apply, each reported independently"),
+  },
+  async ({ op, nodeId, limit, items }: any) => {
+    try {
+      const result = await sendCommandToFigma("grid_layout", { op, nodeId, limit, items });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error in grid_layout: ${error instanceof Error ? error.message : String(error)}`,
           },
         ],
       };
