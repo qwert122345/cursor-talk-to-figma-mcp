@@ -3141,6 +3141,36 @@ server.tool(
   }
 );
 server.tool(
+  "set_constraints",
+  "Set a node's resize constraints (horizontal/vertical: MIN | CENTER | MAX | STRETCH | SCALE) and/or a frame's clipsContent. Constraints only take effect when the parent is not auto layout, or the child is absolutely positioned. Each item is reported independently with its before/after values; dryRun returns before only.",
+  {
+    items: z.array(
+      z.object({
+        nodeId: z.string(),
+        horizontal: z.enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"]).optional(),
+        vertical: z.enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"]).optional(),
+        clipsContent: z.boolean().optional().describe("Frames only")
+      })
+    ).describe("Nodes to change"),
+    dryRun: z.boolean().optional().describe("Report current values without writing")
+  },
+  async ({ items, dryRun }) => {
+    try {
+      const result = await sendCommandToFigma("set_constraints", { items, dryRun });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error in set_constraints: ${error instanceof Error ? error.message : String(error)}`
+          }
+        ]
+      };
+    }
+  }
+);
+server.tool(
   "rename_node",
   "Rename a node in Figma",
   {
