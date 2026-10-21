@@ -4407,10 +4407,29 @@ async function renameVariantProperty(params) {
     try {
       var node = await figma.getNodeByIdAsync(id);
       if (!node) throw new Error("Node not found with ID: " + id);
-      if (node.type !== "COMPONENT_SET")
-        throw new Error("Not a COMPONENT_SET: " + node.type);
+      if (node.type !== "COMPONENT_SET" && node.type !== "COMPONENT")
+        throw new Error("Not a COMPONENT_SET/COMPONENT: " + node.type);
 
-      var props = node.variantGroupProperties || {};
+      // TEXT·BOOLEAN·INSTANCE_SWAP 은 "이름#id" 키로 componentPropertyDefinitions 에만 있다
+      var defs = node.componentPropertyDefinitions || {};
+      var defKey = Object.keys(defs).filter(function (k) {
+        return defs[k].type !== "VARIANT" && k.split("#")[0] === from;
+      })[0];
+      if (defKey) {
+        if (!dryRun) node.editComponentProperty(defKey, { name: to });
+        results.push({
+          id: id,
+          name: node.name,
+          status: dryRun ? "would-rename" : "renamed",
+          type: defs[defKey].type,
+          from: defKey,
+          to: to,
+          properties: Object.keys(node.componentPropertyDefinitions || {}),
+        });
+        continue;
+      }
+
+      var props = node.type === "COMPONENT_SET" ? node.variantGroupProperties || {} : {};
       if (!props[from]) {
         results.push({
           id: id,
