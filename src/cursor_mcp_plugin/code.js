@@ -251,6 +251,8 @@ async function handleCommand(command, params) {
       return await renameMultipleNodes(params);
     case "rename_variant_property":
       return await renameVariantProperty(params);
+    case "set_constraints":
+      return await setConstraints(params);
     case "swap_instances_by_key":
       return await swapInstancesByKey(params);
     case "bind_variable":
@@ -4388,6 +4390,44 @@ async function setMultipleLayoutSizing(params) {
 // 노드 이름을 직접 갈아도 되지만, 그러면 기존 인스턴스의 선택값이 살아남는지가
 // 보장되지 않는다. editComponentProperty 가 피그마가 인스턴스 이관까지 책임지는
 // 정식 경로라 이쪽만 쓴다.
+async function setConstraints(params) {
+  params = params || {};
+  var items = params.items || [];
+  var dryRun = params.dryRun === true;
+  var results = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    try {
+      var node = await figma.getNodeByIdAsync(it.nodeId);
+      if (!node) throw new Error("Node not found with ID: " + it.nodeId);
+      var snap = function () {
+        return {
+          constraints: "constraints" in node ? node.constraints : null,
+          clipsContent: "clipsContent" in node ? node.clipsContent : null,
+        };
+      };
+      var before = snap();
+      if (!dryRun) {
+        if (it.horizontal || it.vertical) {
+          if (!("constraints" in node)) throw new Error("Node has no constraints: " + node.type);
+          node.constraints = {
+            horizontal: it.horizontal || node.constraints.horizontal,
+            vertical: it.vertical || node.constraints.vertical,
+          };
+        }
+        if (it.clipsContent !== undefined) {
+          if (!("clipsContent" in node)) throw new Error("Node has no clipsContent: " + node.type);
+          node.clipsContent = it.clipsContent;
+        }
+      }
+      results.push({ id: node.id, name: node.name, before: before, after: dryRun ? undefined : snap() });
+    } catch (error) {
+      results.push({ id: it.nodeId, error: error.message || String(error) });
+    }
+  }
+  return { dryRun: dryRun, results: results };
+}
+
 async function renameVariantProperty(params) {
   params = params || {};
   var nodeIds = params.nodeIds;

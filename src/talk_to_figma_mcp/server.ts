@@ -3447,6 +3447,7 @@ type FigmaCommand =
   | "rename_node"
   | "set_component_description"
   | "grid_layout"
+  | "set_constraints"
   | "create_section"
   | "set_parent";
 
@@ -3614,6 +3615,10 @@ type CommandParams = {
     nodeId?: string;
     limit?: number;
     items?: { nodeId: string; props?: Record<string, unknown>; position?: Record<string, unknown> }[];
+  };
+  set_constraints: {
+    items: { nodeId: string; horizontal?: string; vertical?: string; clipsContent?: boolean }[];
+    dryRun?: boolean;
   };
   create_section: {
     x: number;
@@ -4106,6 +4111,40 @@ server.tool(
           {
             type: "text",
             text: `Error in grid_layout: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// E-27: Set Constraints Tool
+server.tool(
+  "set_constraints",
+  "Set a node's resize constraints (horizontal/vertical: MIN | CENTER | MAX | STRETCH | SCALE) and/or a frame's clipsContent. Constraints only take effect when the parent is not auto layout, or the child is absolutely positioned. Each item is reported independently with its before/after values; dryRun returns before only.",
+  {
+    items: z
+      .array(
+        z.object({
+          nodeId: z.string(),
+          horizontal: z.enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"]).optional(),
+          vertical: z.enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"]).optional(),
+          clipsContent: z.boolean().optional().describe("Frames only"),
+        })
+      )
+      .describe("Nodes to change"),
+    dryRun: z.boolean().optional().describe("Report current values without writing"),
+  },
+  async ({ items, dryRun }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_constraints", { items, dryRun });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error in set_constraints: ${error instanceof Error ? error.message : String(error)}`,
           },
         ],
       };
