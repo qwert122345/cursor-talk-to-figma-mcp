@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "TalkToFigma": {
-      "command": "bunx",
+      "command": "bun",
       "args": [
-        "cursor-talk-to-figma-mcp@latest"
+        "/Users/hwannnnnnnnnnnn/AI/cursor-talk-to-figma-mcp/dist/server.js"
       ]
     }
   }
