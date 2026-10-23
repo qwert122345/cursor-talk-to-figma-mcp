@@ -3203,7 +3203,7 @@ server.tool(
 );
 server.tool(
   "reset_instance_overrides",
-  "Reset all overrides on the top-level instances under the given nodes (an INSTANCE itself, or every instance not nested in another instance inside a COMPONENT/FRAME), then restore what they showed before: swapped components, component properties (variant/boolean/text/instance-swap), visibility and text content. Other overrides (fills, sizes, stale ones) revert to the main component. Run dryRun first to see which instances are hit.",
+  "Reset all overrides on the top-level instances under the given nodes (an INSTANCE itself, or every instance not nested in another instance inside a COMPONENT/FRAME), then restore what they showed before: the top-level instance's size, swapped components, component properties (variant/boolean/text/instance-swap), visibility and text content. Other overrides (fills, sizes, stale ones) revert to the main component. Run dryRun first to see which instances are hit.",
   {
     nodeIds: z.array(z.string()).describe("INSTANCE ids, or containers (COMPONENT/FRAME) whose top-level instances should be reset"),
     dryRun: z.boolean().optional().describe("List the instances that would be reset without changing anything")
