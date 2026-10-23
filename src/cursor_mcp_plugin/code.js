@@ -282,6 +282,8 @@ async function handleCommand(command, params) {
       return await setImageFill(params);
     case "rename_node":
       return await renameNode(params);
+    case "reset_instance_overrides":
+      return await resetInstanceOverrides(params);
     case "set_component_description":
       return await setComponentDescription(params);
     case "grid_layout":
@@ -1587,6 +1589,111 @@ async function renameNode(params) {
     previousName: previousName,
     name: node.name,
   };
+}
+
+// Reset all overrides on the top-level instances under each node, then
+// re-apply what they showed before: swapped components, component
+// properties, visibility and text. Everything else (fills, sizes, stale
+// overrides) goes back to the main component.
+async function resetInstanceOverrides(params) {
+  const { nodeIds, dryRun = false } = params || {};
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("Missing nodeIds parameter");
+  }
+
+  // Instances not nested inside another instance (nested ones are reset by their parent).
+  const targets = [];
+  const collect = (node) => {
+    if (node.type === "INSTANCE") {
+      targets.push(node);
+      return;
+    }
+    if ("children" in node) node.children.forEach(collect);
+  };
+  for (const id of nodeIds) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) throw new Error(`Node not found with ID: ${id}`);
+    collect(node);
+  }
+
+  // Document order, so parents are restored before their children.
+  const snapshot = async (root) => {
+    const out = [];
+    const walk = async (node) => {
+      const entry = { id: node.id, name: node.name, visible: node.visible };
+      if (node.type === "TEXT") entry.characters = node.characters;
+      if (node.type === "INSTANCE") {
+        const main = await node.getMainComponentAsync();
+        entry.mainId = main ? main.id : null;
+        entry.props = {};
+        for (const [key, p] of Object.entries(node.componentProperties)) {
+          entry.props[key] = p.value;
+        }
+      }
+      out.push(entry);
+      if ("children" in node) for (const c of node.children) await walk(c);
+    };
+    await walk(root);
+    return out;
+  };
+
+  const results = [];
+  for (let i = 0; i < targets.length; i++) {
+    const inst = targets[i];
+    const before = await snapshot(inst);
+    const result = { id: inst.id, name: inst.name, nodes: before.length, restored: 0, failed: [] };
+    results.push(result);
+    if (dryRun) continue;
+
+    inst.resetOverrides();
+
+    for (const entry of before) {
+      const node = await figma.getNodeByIdAsync(entry.id);
+      if (!node) {
+        result.failed.push({ id: entry.id, name: entry.name, reason: "missing after reset" });
+        continue;
+      }
+      try {
+        let changed = false;
+        if (node.type === "INSTANCE" && entry.mainId) {
+          const main = await node.getMainComponentAsync();
+          if (!main || main.id !== entry.mainId) {
+            const target = await figma.getNodeByIdAsync(entry.mainId);
+            if (!target) throw new Error(`component ${entry.mainId} not found`);
+            node.swapComponent(target);
+            changed = true;
+          }
+          const diff = {};
+          for (const [key, value] of Object.entries(entry.props)) {
+            const cur = node.componentProperties[key];
+            if (cur && cur.value !== value) diff[key] = value;
+          }
+          if (Object.keys(diff).length) {
+            node.setProperties(diff);
+            changed = true;
+          }
+        }
+        if (node.visible !== entry.visible) {
+          node.visible = entry.visible;
+          changed = true;
+        }
+        if (node.type === "TEXT" && node.characters !== entry.characters) {
+          await setCharacters(node, entry.characters);
+          changed = true;
+        }
+        if (changed) result.restored++;
+      } catch (error) {
+        result.failed.push({ id: entry.id, name: entry.name, reason: error.message });
+      }
+    }
+    sendProgressUpdate(
+      "reset_instance_overrides", "reset_instance_overrides", "in_progress",
+      Math.round(((i + 1) / targets.length) * 100), targets.length, i + 1,
+      `Reset ${i + 1}/${targets.length}: ${inst.name}`
+    );
+  }
+
+  return { dryRun, instances: results.length, results };
 }
 
 async function createSection(params) {

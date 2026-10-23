@@ -3445,6 +3445,7 @@ type FigmaCommand =
   | "select_hardcoded"
   | "set_image_fill"
   | "rename_node"
+  | "reset_instance_overrides"
   | "set_component_description"
   | "grid_layout"
   | "set_constraints"
@@ -3606,6 +3607,10 @@ type CommandParams = {
   rename_node: {
     nodeId: string;
     name: string;
+  };
+  reset_instance_overrides: {
+    nodeIds: string[];
+    dryRun?: boolean;
   };
   set_component_description: {
     items: { nodeId: string; description: string }[];
@@ -4179,6 +4184,31 @@ server.tool(
             type: "text",
             text: `Error renaming node: ${error instanceof Error ? error.message : String(error)
               }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Reset Instance Overrides Tool
+server.tool(
+  "reset_instance_overrides",
+  "Reset all overrides on the top-level instances under the given nodes (an INSTANCE itself, or every instance not nested in another instance inside a COMPONENT/FRAME), then restore what they showed before: swapped components, component properties (variant/boolean/text/instance-swap), visibility and text content. Other overrides (fills, sizes, stale ones) revert to the main component. Run dryRun first to see which instances are hit.",
+  {
+    nodeIds: z.array(z.string()).describe("INSTANCE ids, or containers (COMPONENT/FRAME) whose top-level instances should be reset"),
+    dryRun: z.boolean().optional().describe("List the instances that would be reset without changing anything"),
+  },
+  async ({ nodeIds, dryRun }: any) => {
+    try {
+      const result = await sendCommandToFigma("reset_instance_overrides", { nodeIds, dryRun }, 300000);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error in reset_instance_overrides: ${error instanceof Error ? error.message : String(error)}`,
           },
         ],
       };
