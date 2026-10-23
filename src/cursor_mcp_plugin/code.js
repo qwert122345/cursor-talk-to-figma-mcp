@@ -1645,13 +1645,10 @@ async function resetInstanceOverrides(params) {
     results.push(result);
     if (dryRun) continue;
 
-    // resetOverrides also drops a resize of the instance itself; keep its size.
-    const { width, height } = inst;
+    // resetOverrides also drops a resize of the instance itself, and a height
+    // change moves bottom-constrained instances; put size and position back last.
+    const { x, y, width, height } = inst;
     inst.resetOverrides();
-    if (inst.width !== width || inst.height !== height) {
-      inst.resize(width, height);
-      result.restored++;
-    }
 
     for (const entry of before) {
       const node = await figma.getNodeByIdAsync(entry.id);
@@ -1691,6 +1688,15 @@ async function resetInstanceOverrides(params) {
       } catch (error) {
         result.failed.push({ id: entry.id, name: entry.name, reason: error.message });
       }
+    }
+    if (inst.width !== width || inst.height !== height) {
+      inst.resize(width, height);
+      result.restored++;
+    }
+    if (inst.x !== x || inst.y !== y) {
+      inst.x = x;
+      inst.y = y;
+      result.restored++;
     }
     sendProgressUpdate(
       "reset_instance_overrides", "reset_instance_overrides", "in_progress",
@@ -6866,8 +6872,35 @@ async function bindVariable(params) {
   } else if (params.variableId) {
     variable = await figma.variables.getVariableByIdAsync(params.variableId);
     if (!variable) throw new Error("Variable not found: " + params.variableId);
+  } else if (params.variableFromNodeId) {
+    // 참조 노드의 첫 SOLID fill 에 묶인 변수를 그대로 쓴다 (권한 불필요).
+    var ref = await figma.getNodeByIdAsync(params.variableFromNodeId);
+    if (!ref) throw new Error("Reference node not found: " + params.variableFromNodeId);
+    var refFills = Array.isArray(ref.fills) ? ref.fills : [];
+    var refPaint = refFills.find(function (p) { return p.type === "SOLID"; });
+    var refBinding = refPaint && refPaint.boundVariables && refPaint.boundVariables.color;
+    if (!refBinding) throw new Error("Reference node has no variable-bound SOLID fill: " + params.variableFromNodeId);
+    variable = await figma.variables.getVariableByIdAsync(refBinding.id);
+    if (!variable) throw new Error("Variable not found: " + refBinding.id);
+  } else if (params.variableName) {
+    // 활성화된 라이브러리에서 이름으로 찾는다 (manifest teamlibrary 권한 필요).
+    var matches = [];
+    var libColls = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    for (var lc = 0; lc < libColls.length; lc++) {
+      var libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libColls[lc].key);
+      for (var lv = 0; lv < libVars.length; lv++) {
+        if (libVars[lv].name === params.variableName) {
+          matches.push({ key: libVars[lv].key, collection: libColls[lc].name, library: libColls[lc].libraryName });
+        }
+      }
+    }
+    if (matches.length === 0) throw new Error("Library variable not found: " + params.variableName);
+    if (matches.length > 1) {
+      throw new Error("Ambiguous variableName, pass variableKey instead: " + JSON.stringify(matches));
+    }
+    variable = await figma.variables.importVariableByKeyAsync(matches[0].key);
   } else {
-    throw new Error("Missing variableKey or variableId parameter");
+    throw new Error("Missing variableKey, variableId, variableFromNodeId or variableName parameter");
   }
 
   if (property === "fills" && variable.resolvedType !== "COLOR") {
@@ -6915,7 +6948,7 @@ async function bindVariable(params) {
           skipped.push({ nodeId: id, name: node.name, reason: "no SOLID fill" });
           continue;
         }
-        if (fills[idx].boundVariables && fills[idx].boundVariables.color) {
+        if (fills[idx].boundVariables && fills[idx].boundVariables.color && params.overwrite !== true) {
           skipped.push({ nodeId: id, name: node.name, reason: "already bound" });
           continue;
         }
