@@ -1645,7 +1645,13 @@ async function resetInstanceOverrides(params) {
     results.push(result);
     if (dryRun) continue;
 
+    // resetOverrides also drops a resize of the instance itself; keep its size.
+    const { width, height } = inst;
     inst.resetOverrides();
+    if (inst.width !== width || inst.height !== height) {
+      inst.resize(width, height);
+      result.restored++;
+    }
 
     for (const entry of before) {
       const node = await figma.getNodeByIdAsync(entry.id);
