@@ -850,11 +850,14 @@ server.tool(
     property: import_zod.z.string().describe("fills | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
     variableKey: import_zod.z.string().optional().describe("Key of a published variable (imported via importVariableByKeyAsync). Use this across files"),
     variableId: import_zod.z.string().optional().describe("Id of a variable local to the current file"),
+    variableName: import_zod.z.string().optional().describe("Full name of a variable in an enabled library (e.g. CL/MT/case/label/warning), resolved via teamLibrary"),
+    variableFromNodeId: import_zod.z.string().optional().describe("Use the variable bound to this node's first SOLID fill (no library permission needed)"),
+    overwrite: import_zod.z.boolean().optional().describe("fills only: rebind a fill already bound to another variable instead of skipping it"),
     dryRun: import_zod.z.boolean().optional().describe("Report what would change without writing")
   },
-  async ({ nodeIds, property, variableKey, variableId, dryRun }) => {
+  async ({ nodeIds, property, variableKey, variableId, variableFromNodeId, variableName, overwrite, dryRun }) => {
     try {
-      const result = await sendCommandToFigma("bind_variable", { nodeIds, property, variableKey, variableId, dryRun });
+      const result = await sendCommandToFigma("bind_variable", { nodeIds, property, variableKey, variableId, variableFromNodeId, variableName, overwrite, dryRun });
       return {
         content: [{ type: "text", text: JSON.stringify(result) }]
       };
