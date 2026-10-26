@@ -1591,6 +1591,29 @@ async function renameNode(params) {
   };
 }
 
+// Put back auto-layout sizing modes and the size of fixed axes. Returns true
+// when something changed.
+function restoreSize(node, g) {
+  let changed = false;
+  // Sizing modes only exist inside auto-layout; outside they read undefined.
+  if (g.sizingH && node.layoutSizingHorizontal !== g.sizingH) {
+    node.layoutSizingHorizontal = g.sizingH;
+    changed = true;
+  }
+  if (g.sizingV && node.layoutSizingVertical !== g.sizingV) {
+    node.layoutSizingVertical = g.sizingV;
+    changed = true;
+  }
+  // resize() would turn FILL/HUG into FIXED, so only touch fixed axes.
+  const w = !g.sizingH || g.sizingH === "FIXED" ? g.width : node.width;
+  const h = !g.sizingV || g.sizingV === "FIXED" ? g.height : node.height;
+  if (Math.abs(node.width - w) > 0.01 || Math.abs(node.height - h) > 0.01) {
+    node.resize(w, h);
+    changed = true;
+  }
+  return changed;
+}
+
 // Reset all overrides on the top-level instances under each node, then
 // re-apply what they showed before: swapped components, component
 // properties, visibility and text. Everything else (fills, sizes, stale
@@ -1622,6 +1645,16 @@ async function resetInstanceOverrides(params) {
     const walk = async (node) => {
       const entry = { id: node.id, name: node.name, visible: node.visible };
       if (node.type === "TEXT") entry.characters = node.characters;
+      // Sublayer size overrides (e.g. a list clipped to a fixed height) are
+      // dropped by resetOverrides too. Text sizes follow their content.
+      if (node !== root && node.type !== "TEXT" && "resize" in node) {
+        entry.size = {
+          width: node.width,
+          height: node.height,
+          sizingH: node.layoutSizingHorizontal,
+          sizingV: node.layoutSizingVertical,
+        };
+      }
       if (node.type === "INSTANCE") {
         const main = await node.getMainComponentAsync();
         entry.mainId = main ? main.id : null;
@@ -1696,6 +1729,7 @@ async function resetInstanceOverrides(params) {
           await setCharacters(node, entry.characters);
           changed = true;
         }
+        if (entry.size && restoreSize(node, entry.size)) changed = true;
         if (changed) result.restored++;
       } catch (error) {
         result.failed.push({ id: entry.id, name: entry.name, reason: error.message });
@@ -1727,24 +1761,7 @@ async function resetInstanceOverrides(params) {
           inst.constraints = g.constraints;
           changed = true;
         }
-        // Sizing modes only exist inside auto-layout; outside they read undefined.
-        if (g.sizingH && inst.layoutSizingHorizontal !== g.sizingH) {
-          inst.layoutSizingHorizontal = g.sizingH;
-          changed = true;
-        }
-        if (g.sizingV && inst.layoutSizingVertical !== g.sizingV) {
-          inst.layoutSizingVertical = g.sizingV;
-          changed = true;
-        }
-        // resize() would turn FILL/HUG into FIXED, so only touch fixed axes.
-        const fixedW = !g.sizingH || g.sizingH === "FIXED";
-        const fixedH = !g.sizingV || g.sizingV === "FIXED";
-        const w = fixedW ? g.width : inst.width;
-        const h = fixedH ? g.height : inst.height;
-        if (inst.width !== w || inst.height !== h) {
-          inst.resize(w, h);
-          changed = true;
-        }
+        if (restoreSize(inst, g)) changed = true;
         if (inst.x !== g.x || inst.y !== g.y) {
           inst.x = g.x;
           inst.y = g.y;
