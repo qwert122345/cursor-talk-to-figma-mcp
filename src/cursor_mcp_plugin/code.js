@@ -1743,6 +1743,9 @@ async function resetInstanceOverrides(params) {
   }
 
   if (!dryRun) {
+    // Locked layers ignore x/y writes; unlock while putting geometry back.
+    const locked = targets.filter((inst) => inst.locked);
+    locked.forEach((inst) => (inst.locked = false));
     for (let i = 0; i < targets.length; i++) {
       const inst = targets[i];
       const g = geometry[i];
@@ -1762,16 +1765,34 @@ async function resetInstanceOverrides(params) {
           changed = true;
         }
         if (restoreSize(inst, g)) changed = true;
-        if (inst.x !== g.x || inst.y !== g.y) {
-          inst.x = g.x;
-          inst.y = g.y;
-          changed = true;
-        }
         if (changed) results[i].restored++;
       } catch (error) {
         results[i].failed.push({ id: inst.id, name: inst.name, reason: "geometry: " + error.message });
       }
     }
+    // Positions last: a later sibling's resize can shrink a hugging parent and
+    // drag constrained siblings that were already put back. Auto layout can
+    // reflow after a move too, so repeat until nothing drifts.
+    // ponytail: 3 passes, raise if a deeper chain of hugging parents shows up
+    for (let pass = 0; pass < 3; pass++) {
+      let moved = false;
+      for (let i = 0; i < targets.length; i++) {
+        const inst = targets[i];
+        const g = geometry[i];
+        try {
+          if (inst.x !== g.x || inst.y !== g.y) {
+            inst.x = g.x;
+            inst.y = g.y;
+            if (pass === 0) results[i].restored++;
+            moved = true;
+          }
+        } catch (error) {
+          if (pass === 0) results[i].failed.push({ id: inst.id, name: inst.name, reason: "position: " + error.message });
+        }
+      }
+      if (!moved) break;
+    }
+    locked.forEach((inst) => (inst.locked = true));
   }
 
   return { dryRun, instances: results.length, results };
