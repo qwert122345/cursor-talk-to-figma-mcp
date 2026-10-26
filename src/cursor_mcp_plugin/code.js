@@ -1648,6 +1648,8 @@ async function resetInstanceOverrides(params) {
     height: inst.height,
     sizingH: inst.layoutSizingHorizontal,
     sizingV: inst.layoutSizingVertical,
+    positioning: inst.layoutPositioning,
+    constraints: inst.constraints,
   }));
 
   const results = [];
@@ -1712,6 +1714,19 @@ async function resetInstanceOverrides(params) {
       const g = geometry[i];
       try {
         let changed = false;
+        // An ABSOLUTE child left in auto-layout flow shifts every sibling, so first.
+        if (g.positioning && inst.layoutPositioning !== g.positioning) {
+          inst.layoutPositioning = g.positioning;
+          changed = true;
+        }
+        if (
+          g.constraints &&
+          (inst.constraints.horizontal !== g.constraints.horizontal ||
+            inst.constraints.vertical !== g.constraints.vertical)
+        ) {
+          inst.constraints = g.constraints;
+          changed = true;
+        }
         // Sizing modes only exist inside auto-layout; outside they read undefined.
         if (g.sizingH && inst.layoutSizingHorizontal !== g.sizingH) {
           inst.layoutSizingHorizontal = g.sizingH;
