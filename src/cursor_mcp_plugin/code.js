@@ -1752,7 +1752,9 @@ async function resetInstanceOverrides(params) {
       try {
         let changed = false;
         // An ABSOLUTE child left in auto-layout flow shifts every sibling, so first.
-        if (g.positioning && inst.layoutPositioning !== g.positioning) {
+        // Figma rejects ABSOLUTE under a non-auto-layout parent, where it is meaningless anyway.
+        if (g.positioning && inst.layoutPositioning !== g.positioning &&
+            inst.parent && inst.parent.layoutMode && inst.parent.layoutMode !== "NONE") {
           inst.layoutPositioning = g.positioning;
           changed = true;
         }
