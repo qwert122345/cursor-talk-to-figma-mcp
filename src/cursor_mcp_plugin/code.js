@@ -1637,6 +1637,19 @@ async function resetInstanceOverrides(params) {
     return out;
   };
 
+  // resetOverrides also drops the instance's own resize and auto-layout sizing,
+  // and a size change moves siblings (constraints, hugging parents). So record
+  // every target's geometry before touching any of them, and put it back only
+  // after all resets are done.
+  const geometry = targets.map((inst) => ({
+    x: inst.x,
+    y: inst.y,
+    width: inst.width,
+    height: inst.height,
+    sizingH: inst.layoutSizingHorizontal,
+    sizingV: inst.layoutSizingVertical,
+  }));
+
   const results = [];
   for (let i = 0; i < targets.length; i++) {
     const inst = targets[i];
@@ -1645,9 +1658,6 @@ async function resetInstanceOverrides(params) {
     results.push(result);
     if (dryRun) continue;
 
-    // resetOverrides also drops a resize of the instance itself, and a height
-    // change moves bottom-constrained instances; put size and position back last.
-    const { x, y, width, height } = inst;
     inst.resetOverrides();
 
     for (const entry of before) {
@@ -1689,20 +1699,47 @@ async function resetInstanceOverrides(params) {
         result.failed.push({ id: entry.id, name: entry.name, reason: error.message });
       }
     }
-    if (inst.width !== width || inst.height !== height) {
-      inst.resize(width, height);
-      result.restored++;
-    }
-    if (inst.x !== x || inst.y !== y) {
-      inst.x = x;
-      inst.y = y;
-      result.restored++;
-    }
     sendProgressUpdate(
       "reset_instance_overrides", "reset_instance_overrides", "in_progress",
       Math.round(((i + 1) / targets.length) * 100), targets.length, i + 1,
       `Reset ${i + 1}/${targets.length}: ${inst.name}`
     );
+  }
+
+  if (!dryRun) {
+    for (let i = 0; i < targets.length; i++) {
+      const inst = targets[i];
+      const g = geometry[i];
+      try {
+        let changed = false;
+        // Sizing modes only exist inside auto-layout; outside they read undefined.
+        if (g.sizingH && inst.layoutSizingHorizontal !== g.sizingH) {
+          inst.layoutSizingHorizontal = g.sizingH;
+          changed = true;
+        }
+        if (g.sizingV && inst.layoutSizingVertical !== g.sizingV) {
+          inst.layoutSizingVertical = g.sizingV;
+          changed = true;
+        }
+        // resize() would turn FILL/HUG into FIXED, so only touch fixed axes.
+        const fixedW = !g.sizingH || g.sizingH === "FIXED";
+        const fixedH = !g.sizingV || g.sizingV === "FIXED";
+        const w = fixedW ? g.width : inst.width;
+        const h = fixedH ? g.height : inst.height;
+        if (inst.width !== w || inst.height !== h) {
+          inst.resize(w, h);
+          changed = true;
+        }
+        if (inst.x !== g.x || inst.y !== g.y) {
+          inst.x = g.x;
+          inst.y = g.y;
+          changed = true;
+        }
+        if (changed) results[i].restored++;
+      } catch (error) {
+        results[i].failed.push({ id: inst.id, name: inst.name, reason: "geometry: " + error.message });
+      }
+    }
   }
 
   return { dryRun, instances: results.length, results };
