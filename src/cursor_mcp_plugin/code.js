@@ -300,6 +300,8 @@ async function handleCommand(command, params) {
       return await createVectorFromSvg(params);
     case "set_text_style":
       return await setTextStyle(params);
+    case "set_stroke_style":
+      return await setStrokeStyle(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -414,6 +416,29 @@ async function createVectorFromSvg(params) {
     height: result.height,
     children: "children" in result ? result.children.map((c) => ({ id: c.id, name: c.name, type: c.type })) : [],
   };
+}
+
+// Change stroke join / align / cap / miter limit / dashes on many nodes at once
+async function setStrokeStyle(params) {
+  const { nodeIds, strokeJoin, strokeAlign, strokeCap, strokeMiterLimit, dashPattern } = params || {};
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) throw new Error("Missing nodeIds parameter");
+  const results = [];
+  for (const id of nodeIds) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) { results.push({ id, error: "Node not found" }); continue; }
+    try {
+      const before = { strokeJoin: node.strokeJoin, strokeAlign: node.strokeAlign, strokeCap: node.strokeCap, strokeMiterLimit: node.strokeMiterLimit };
+      if (strokeJoin && "strokeJoin" in node) node.strokeJoin = strokeJoin;
+      if (strokeAlign && "strokeAlign" in node) node.strokeAlign = strokeAlign;
+      if (strokeCap && "strokeCap" in node) node.strokeCap = strokeCap;
+      if (strokeMiterLimit !== undefined && "strokeMiterLimit" in node) node.strokeMiterLimit = strokeMiterLimit;
+      if (Array.isArray(dashPattern) && "dashPattern" in node) node.dashPattern = dashPattern;
+      results.push({ id, name: node.name, before, after: { strokeJoin: node.strokeJoin, strokeAlign: node.strokeAlign, strokeCap: node.strokeCap, strokeMiterLimit: node.strokeMiterLimit } });
+    } catch (e) {
+      results.push({ id, error: e.message });
+    }
+  }
+  return { updated: results.filter((r) => !r.error).length, results };
 }
 
 // Change text styling without recreating the node

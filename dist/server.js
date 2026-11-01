@@ -3442,6 +3442,28 @@ server.tool(
     }
   }
 );
+server.tool(
+  "set_stroke_style",
+  "Set stroke join, alignment, cap, miter limit and dash pattern on many nodes at once (only the given properties change). Use strokeJoin ROUND or BEVEL to stop MITER joins from shooting spikes out of sharp corners.",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("Nodes to update"),
+    strokeJoin: z.enum(["MITER", "BEVEL", "ROUND"]).optional(),
+    strokeAlign: z.enum(["CENTER", "INSIDE", "OUTSIDE"]).optional(),
+    strokeCap: z.enum(["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL"]).optional(),
+    strokeMiterLimit: z.number().min(1).optional().describe("Miter limit (applies to MITER joins)"),
+    dashPattern: z.array(z.number()).optional().describe("Dash pattern, [] for solid")
+  },
+  async (params) => {
+    try {
+      const result = await sendCommandToFigma("set_stroke_style", params, 6e4);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error setting stroke style: ${error instanceof Error ? error.message : String(error)}` }]
+      };
+    }
+  }
+);
 async function main() {
   try {
     connectToFigma();
