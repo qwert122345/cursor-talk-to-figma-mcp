@@ -645,7 +645,7 @@ server.tool(
     try {
       const result = await sendCommandToFigma("set_fill_color", {
         nodeId,
-        color: { r, g, b, a: a || 1 },
+        color: { r, g, b, a: a ?? 1 },
       });
       const typedResult = result as { name: string };
       return {
@@ -653,7 +653,7 @@ server.tool(
           {
             type: "text",
             text: `Set fill color of node "${typedResult.name
-              }" to RGBA(${r}, ${g}, ${b}, ${a || 1})`,
+              }" to RGBA(${r}, ${g}, ${b}, ${a ?? 1})`,
           },
         ],
       };
@@ -687,8 +687,8 @@ server.tool(
     try {
       const result = await sendCommandToFigma("set_stroke_color", {
         nodeId,
-        color: { r, g, b, a: a || 1 },
-        weight: weight || 1,
+        color: { r, g, b, a: a ?? 1 },
+        weight,
       });
       const typedResult = result as { name: string };
       return {
@@ -696,7 +696,7 @@ server.tool(
           {
             type: "text",
             text: `Set stroke color of node "${typedResult.name
-              }" to RGBA(${r}, ${g}, ${b}, ${a || 1}) with weight ${weight || 1}`,
+              }" to RGBA(${r}, ${g}, ${b}, ${a ?? 1})${weight !== undefined ? ` with weight ${weight}` : ""}`,
           },
         ],
       };
@@ -3453,7 +3453,11 @@ type FigmaCommand =
   | "grid_layout"
   | "set_constraints"
   | "create_section"
-  | "set_parent";
+  | "set_parent"
+  | "get_vector_paths"
+  | "set_vector_paths"
+  | "create_vector_from_svg"
+  | "set_text_style";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4358,6 +4362,109 @@ server.tool(
               }`,
           },
         ],
+      };
+    }
+  }
+);
+
+// Get Vector Paths Tool
+server.tool(
+  "get_vector_paths",
+  "Read the path geometry (vectorPaths SVG data in the node's local coordinates), fills, strokes and stroke weight of one or more VECTOR nodes. Much lighter than get_node_info for vectors, so use it to inspect or edit vector shapes.",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("IDs of the vector nodes to read"),
+  },
+  async ({ nodeIds }: any) => {
+    try {
+      const result = await sendCommandToFigma("get_vector_paths", { nodeIds }, 60000);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error getting vector paths: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// Set Vector Paths Tool
+server.tool(
+  "set_vector_paths",
+  "Replace the path geometry of a VECTOR node, keeping its fills, strokes, name and layer order. Paths use SVG path data in the node's local coordinates, the same space get_vector_paths returns (e.g. to smooth a jagged outline). Returns size and position before and after.",
+  {
+    nodeId: z.string().describe("ID of the VECTOR node"),
+    vectorPaths: z
+      .array(
+        z.object({
+          windingRule: z.enum(["NONZERO", "EVENODD", "NONE"]).optional().describe("Default NONZERO"),
+          data: z.string().describe("SVG path data, e.g. 'M 0 0 L 10 0 C 12 0 14 2 14 4 Z'"),
+        })
+      )
+      .min(1)
+      .describe("New paths"),
+  },
+  async ({ nodeId, vectorPaths }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_vector_paths", { nodeId, vectorPaths });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error setting vector paths: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// Create Vector From SVG Tool
+server.tool(
+  "create_vector_from_svg",
+  "Import SVG markup as editable Figma vectors (a frame of vector layers), optionally inside a parent at a position. Pass svgPath to read the SVG from a local file instead of inline markup. flatten merges the imported layers into a single vector.",
+  {
+    svg: z.string().optional().describe("SVG markup"),
+    svgPath: z.string().optional().describe("Absolute path to a local .svg file, read by the MCP server"),
+    parentId: z.string().optional().describe("Parent node ID to place the result in"),
+    x: z.number().optional().describe("X position (relative to the parent)"),
+    y: z.number().optional().describe("Y position (relative to the parent)"),
+    name: z.string().optional().describe("Layer name"),
+    flatten: z.boolean().optional().describe("Flatten the imported layers into one vector"),
+  },
+  async ({ svg, svgPath, parentId, x, y, name, flatten }: any) => {
+    try {
+      let markup = svg;
+      if (!markup && svgPath) {
+        const fs = await import("fs/promises");
+        markup = await fs.readFile(svgPath, "utf8");
+      }
+      if (!markup) throw new Error("Provide svg or svgPath");
+      const result = await sendCommandToFigma("create_vector_from_svg", { svg: markup, parentId, x, y, name, flatten }, 60000);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error creating vector from SVG: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// Set Text Style Tool
+server.tool(
+  "set_text_style",
+  "Change the style of an existing TEXT node without recreating it: font size, font family/style, line height, letter spacing, horizontal alignment. Only the given properties change.",
+  {
+    nodeId: z.string().describe("ID of the TEXT node"),
+    fontSize: z.number().positive().optional().describe("Font size (decimals allowed, e.g. 9.5)"),
+    fontFamily: z.string().optional().describe("Font family, e.g. 'SUIT'"),
+    fontStyle: z.string().optional().describe("Font style, e.g. 'Medium', 'Bold'"),
+    lineHeight: z.union([z.number(), z.literal("AUTO")]).optional().describe("Line height in px, or 'AUTO'"),
+    letterSpacing: z.number().optional().describe("Letter spacing in px"),
+    textAlignHorizontal: z.enum(["LEFT", "CENTER", "RIGHT", "JUSTIFIED"]).optional(),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("set_text_style", params);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error setting text style: ${error instanceof Error ? error.message : String(error)}` }],
       };
     }
   }

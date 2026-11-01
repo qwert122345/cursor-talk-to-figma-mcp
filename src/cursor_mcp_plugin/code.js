@@ -292,12 +292,174 @@ async function handleCommand(command, params) {
       return await createSection(params);
     case "set_parent":
       return await setParent(params);
+    case "get_vector_paths":
+      return await getVectorPaths(params);
+    case "set_vector_paths":
+      return await setVectorPaths(params);
+    case "create_vector_from_svg":
+      return await createVectorFromSvg(params);
+    case "set_text_style":
+      return await setTextStyle(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
 }
 
 // Command implementations
+
+function paintToPlain(paint) {
+  if (!paint) return paint;
+  const out = { type: paint.type, visible: paint.visible !== false };
+  if (paint.type === "SOLID") {
+    const c = paint.color;
+    const hex = (v) => Math.round(v * 255).toString(16).padStart(2, "0");
+    out.hex = "#" + hex(c.r) + hex(c.g) + hex(c.b);
+    out.opacity = paint.opacity !== undefined ? paint.opacity : 1;
+  }
+  return out;
+}
+
+// Read only the path geometry and paint of vectors (cheap, unlike get_node_info)
+async function getVectorPaths(params) {
+  const { nodeIds } = params || {};
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("Missing nodeIds parameter");
+  }
+  const results = [];
+  for (const id of nodeIds) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) {
+      results.push({ id, error: "Node not found" });
+      continue;
+    }
+    if (!("vectorPaths" in node)) {
+      results.push({ id, name: node.name, type: node.type, error: "Node has no vectorPaths" });
+      continue;
+    }
+    results.push({
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      x: node.x,
+      y: node.y,
+      width: node.width,
+      height: node.height,
+      opacity: node.opacity,
+      vectorPaths: node.vectorPaths.map((p) => ({ windingRule: p.windingRule, data: p.data })),
+      fills: Array.isArray(node.fills) ? node.fills.map(paintToPlain) : "MIXED",
+      strokes: Array.isArray(node.strokes) ? node.strokes.map(paintToPlain) : [],
+      strokeWeight: typeof node.strokeWeight === "number" ? node.strokeWeight : "MIXED",
+      strokeJoin: node.strokeJoin,
+      strokeAlign: node.strokeAlign,
+      dashPattern: node.dashPattern,
+    });
+  }
+  return { nodes: results };
+}
+
+// Replace the path geometry of a vector. Paths are in the node's local coordinates
+// (the same space get_vector_paths returns), so fills, strokes, name and layer order are kept.
+async function setVectorPaths(params) {
+  const { nodeId, vectorPaths } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  if (!Array.isArray(vectorPaths) || vectorPaths.length === 0) {
+    throw new Error("Missing vectorPaths parameter");
+  }
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (node.type !== "VECTOR") throw new Error(`Node is not a VECTOR: ${node.type}`);
+
+  const before = { x: node.x, y: node.y, width: node.width, height: node.height };
+  const absBefore = node.absoluteTransform;
+  node.vectorPaths = vectorPaths.map((p) => ({
+    windingRule: p.windingRule || "NONZERO",
+    data: String(p.data),
+  }));
+  return {
+    id: node.id,
+    name: node.name,
+    before,
+    after: { x: node.x, y: node.y, width: node.width, height: node.height },
+    transformChanged:
+      JSON.stringify(absBefore) !== JSON.stringify(node.absoluteTransform),
+  };
+}
+
+// Import SVG markup as editable vectors, optionally into a parent at a position
+async function createVectorFromSvg(params) {
+  const { svg, parentId, x, y, name, flatten } = params || {};
+  if (!svg) throw new Error("Missing svg parameter");
+  const node = figma.createNodeFromSvg(String(svg));
+  if (parentId) {
+    const parent = await figma.getNodeByIdAsync(parentId);
+    if (!parent) throw new Error(`Parent not found with ID: ${parentId}`);
+    if (!("appendChild" in parent)) throw new Error(`Parent cannot hold children: ${parent.type}`);
+    parent.appendChild(node);
+  }
+  if (x !== undefined) node.x = x;
+  if (y !== undefined) node.y = y;
+  if (name) node.name = name;
+  let result = node;
+  if (flatten && "children" in node && node.children.length > 0) {
+    result = figma.flatten(node.children, node);
+    if (name) result.name = name;
+  }
+  return {
+    id: result.id,
+    name: result.name,
+    type: result.type,
+    x: result.x,
+    y: result.y,
+    width: result.width,
+    height: result.height,
+    children: "children" in result ? result.children.map((c) => ({ id: c.id, name: c.name, type: c.type })) : [],
+  };
+}
+
+// Change text styling without recreating the node
+async function setTextStyle(params) {
+  const { nodeId, fontSize, fontFamily, fontStyle, lineHeight, letterSpacing, textAlignHorizontal } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (node.type !== "TEXT") throw new Error(`Node is not TEXT: ${node.type}`);
+
+  // Load every font currently used so mixed-style text can be edited
+  const len = node.characters.length;
+  const fonts = len > 0 ? node.getRangeAllFontNames(0, len) : [node.fontName];
+  for (const f of fonts) await figma.loadFontAsync(f);
+
+  if (fontFamily || fontStyle) {
+    const current = node.fontName === figma.mixed ? fonts[0] : node.fontName;
+    const next = { family: fontFamily || current.family, style: fontStyle || current.style };
+    await figma.loadFontAsync(next);
+    node.fontName = next;
+  }
+  if (fontSize !== undefined) node.fontSize = parseFloat(fontSize);
+  if (lineHeight !== undefined) {
+    node.lineHeight = lineHeight === "AUTO"
+      ? { unit: "AUTO" }
+      : typeof lineHeight === "object"
+        ? lineHeight
+        : { unit: "PIXELS", value: parseFloat(lineHeight) };
+  }
+  if (letterSpacing !== undefined) {
+    node.letterSpacing = typeof letterSpacing === "object"
+      ? letterSpacing
+      : { unit: "PIXELS", value: parseFloat(letterSpacing) };
+  }
+  if (textAlignHorizontal) node.textAlignHorizontal = textAlignHorizontal;
+
+  return {
+    id: node.id,
+    name: node.name,
+    fontName: node.fontName === figma.mixed ? "MIXED" : node.fontName,
+    fontSize: node.fontSize === figma.mixed ? "MIXED" : node.fontSize,
+    lineHeight: node.lineHeight === figma.mixed ? "MIXED" : node.lineHeight,
+    width: node.width,
+    height: node.height,
+  };
+}
 
 async function getDocumentInfo() {
   await figma.currentPage.loadAsync();
@@ -936,7 +1098,7 @@ async function createText(params) {
   }
   try {
     textNode.fontName = appliedFont;
-    textNode.fontSize = parseInt(fontSize);
+    textNode.fontSize = parseFloat(fontSize);
   } catch (error) {
     console.error("Error setting font", error);
   }
@@ -1019,7 +1181,7 @@ async function setFillColor(params) {
     r: parseFloat(r) || 0,
     g: parseFloat(g) || 0,
     b: parseFloat(b) || 0,
-    a: parseFloat(a) || 1,
+    a: a === undefined || a === null || isNaN(parseFloat(a)) ? 1 : parseFloat(a),
   };
 
   // Set fill
@@ -1048,7 +1210,7 @@ async function setStrokeColor(params) {
   const {
     nodeId,
     color: { r, g, b, a },
-    weight = 1,
+    weight,
   } = params || {};
 
   if (!nodeId) {
@@ -1085,8 +1247,8 @@ async function setStrokeColor(params) {
 
   node.strokes = [paintStyle];
 
-  // Set stroke weight if available
-  if ("strokeWeight" in node) {
+  // Set stroke weight only when given (keep the existing weight otherwise)
+  if (weight !== undefined && weight !== null && "strokeWeight" in node) {
     node.strokeWeight = weight;
   }
 
