@@ -2631,6 +2631,19 @@ async function setTextContent(params) {
   }
 
   try {
+    // Linked / mixed-style text: node.fontName is figma.mixed (loadFontAsync throws
+    // "Cannot unwrap symbol") and setCharacters would flatten the link styling.
+    if (hasRichText(node)) {
+      const { keptLinks, droppedLinks } = await setTextPreservingLinks(node, text);
+      return {
+        id: node.id,
+        name: node.name,
+        characters: node.characters,
+        keptLinks,
+        droppedLinks,
+      };
+    }
+
     await figma.loadFontAsync(node.fontName);
 
     await setCharacters(node, text);
@@ -2644,6 +2657,75 @@ async function setTextContent(params) {
   } catch (error) {
     throw new Error(`Error setting text content: ${error.message}`);
   }
+}
+
+function hasRichText(node) {
+  if (node.fontName === figma.mixed || node.fills === figma.mixed) return true;
+  if (!node.characters.length) return false;
+  return node.getStyledTextSegments(["hyperlink"]).some((s) => s.hyperlink);
+}
+
+// Replace characters, then re-apply the base style to the whole text and each
+// hyperlink segment's style + link to the first match of its text (in order).
+// A link whose text no longer appears in the new string is reported as dropped.
+async function setTextPreservingLinks(node, text) {
+  const len = node.characters.length;
+  const segs = len
+    ? node.getStyledTextSegments([
+        "fontName",
+        "fills",
+        "fillStyleId",
+        "textStyleId",
+        "textDecoration",
+        "hyperlink",
+      ])
+    : [];
+  const fonts = len ? node.getRangeAllFontNames(0, len) : [];
+  await Promise.all(fonts.map((f) => figma.loadFontAsync(f)));
+
+  const base = segs.find((s) => !s.hyperlink) || segs[0];
+  const links = segs.filter((s) => s.hyperlink);
+
+  node.characters = text;
+  if (base && text.length) await applyTextSegment(node, 0, text.length, base, true);
+
+  const keptLinks = [];
+  const droppedLinks = [];
+  let from = 0;
+  for (const s of links) {
+    let i = text.indexOf(s.characters, from);
+    if (i < 0) i = text.indexOf(s.characters);
+    if (i < 0) {
+      droppedLinks.push(s.characters);
+      continue;
+    }
+    try {
+      await applyTextSegment(node, i, i + s.characters.length, s, false);
+    } catch (e) {
+      // e.g. NODE link whose target was deleted: Figma refuses to re-set it
+      droppedLinks.push(`${s.characters} (${e.message})`);
+      continue;
+    }
+    keptLinks.push(s.characters);
+    from = i + s.characters.length;
+  }
+  return { keptLinks, droppedLinks };
+}
+
+async function applyTextSegment(node, start, end, seg, clearLink) {
+  if (seg.textStyleId) await node.setRangeTextStyleIdAsync(start, end, seg.textStyleId);
+  const cur = node.getRangeFontName(start, end);
+  if (
+    cur === figma.mixed ||
+    cur.family !== seg.fontName.family ||
+    cur.style !== seg.fontName.style
+  ) {
+    node.setRangeFontName(start, end, seg.fontName);
+  }
+  if (seg.fillStyleId) await node.setRangeFillStyleIdAsync(start, end, seg.fillStyleId);
+  else node.setRangeFills(start, end, seg.fills);
+  node.setRangeTextDecoration(start, end, seg.textDecoration);
+  node.setRangeHyperlink(start, end, clearLink ? null : seg.hyperlink);
 }
 
 // Initialize settings on load
@@ -3477,7 +3559,9 @@ async function setMultipleTextContents(params) {
 
         // Highlight the node before changing text
         let originalFills;
-        try {
+        // Rich text (links / mixed styles): skip the highlight — overwriting and
+        // restoring whole-node fills would wipe the per-range link colors.
+        if (!hasRichText(textNode)) try {
           // Save original fills for restoration later
           originalFills = JSON.parse(JSON.stringify(textNode.fills));
           // Apply highlight color (orange with 30% opacity)
@@ -3496,7 +3580,7 @@ async function setMultipleTextContents(params) {
         }
 
         // Use the existing setTextContent function to handle font loading and text setting
-        await setTextContent({
+        const setResult = await setTextContent({
           nodeId: replacement.nodeId,
           text: replacement.text,
         });
@@ -3520,6 +3604,8 @@ async function setMultipleTextContents(params) {
           nodeId: replacement.nodeId,
           originalText: originalText,
           translatedText: replacement.text,
+          keptLinks: setResult.keptLinks,
+          droppedLinks: setResult.droppedLinks,
         };
       } catch (error) {
         console.error(
