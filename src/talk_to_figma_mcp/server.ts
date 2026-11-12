@@ -3463,7 +3463,8 @@ type FigmaCommand =
   | "set_visible"
   | "clear_fills"
   | "create_component_from_node"
-  | "add_component_property";
+  | "add_component_property"
+  | "combine_as_variants";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4569,6 +4570,16 @@ server.tool(
     bindNodeIds: z.array(z.string()).optional().describe("Descendant layers to bind to the property"),
   },
   jsonToolHandler("add_component_property", "adding component property")
+);
+
+server.tool(
+  "combine_as_variants",
+  "Combine two or more components into one component set (Combine as variants). Name each component like \"type=table\" first so the variant property is read from the names. Existing instances stay linked. Returns the new set id and its variants.",
+  {
+    componentIds: z.array(z.string()).min(2).describe("COMPONENT ids to combine (not already variants)"),
+    name: z.string().optional().describe("Name for the new component set"),
+  },
+  jsonToolHandler("combine_as_variants", "combining as variants")
 );
 
 // Start the server

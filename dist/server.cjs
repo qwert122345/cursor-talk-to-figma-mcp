@@ -3550,6 +3550,15 @@ server.tool(
   },
   jsonToolHandler("add_component_property", "adding component property")
 );
+server.tool(
+  "combine_as_variants",
+  'Combine two or more components into one component set (Combine as variants). Name each component like "type=table" first so the variant property is read from the names. Existing instances stay linked. Returns the new set id and its variants.',
+  {
+    componentIds: import_zod.z.array(import_zod.z.string()).min(2).describe("COMPONENT ids to combine (not already variants)"),
+    name: import_zod.z.string().optional().describe("Name for the new component set")
+  },
+  jsonToolHandler("combine_as_variants", "combining as variants")
+);
 async function main() {
   try {
     connectToFigma();

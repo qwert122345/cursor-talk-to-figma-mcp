@@ -312,6 +312,8 @@ async function handleCommand(command, params) {
       return await createComponentFromNode(params);
     case "add_component_property":
       return await addComponentProperty(params);
+    case "combine_as_variants":
+      return await combineAsVariants(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -7774,4 +7776,31 @@ async function addComponentProperty(params) {
   }
 
   return { componentId: target.id, propertyKey, type, field, bound, failed };
+}
+
+// 컴포넌트 여러 개를 하나의 컴포넌트 세트로 합친다 (Combine as variants).
+// variant 이름은 각 컴포넌트 이름("type=table" 형식)에서 Figma 가 읽는다.
+// 기존 인스턴스는 연결이 유지된다.
+async function combineAsVariants(params) {
+  const { componentIds, name } = params || {};
+  const nodes = await getNodesOrThrow(componentIds);
+  for (const node of nodes) {
+    if (node.type !== "COMPONENT") {
+      throw new Error(`Node ${node.id} is ${node.type}, not a COMPONENT`);
+    }
+    if (node.parent && node.parent.type === "COMPONENT_SET") {
+      throw new Error(`Component ${node.id} is already a variant of ${node.parent.name}`);
+    }
+  }
+  // 첫 컴포넌트가 있던 곳(페이지·섹션·프레임)에 세트를 둔다
+  const parent = nodes[0].parent || figma.currentPage;
+  const set = figma.combineAsVariants(nodes, parent);
+  if (name) set.name = String(name);
+  return {
+    id: set.id,
+    name: set.name,
+    key: set.key,
+    variants: set.children.map((c) => ({ id: c.id, name: c.name })),
+    variantGroupProperties: set.variantGroupProperties,
+  };
 }
