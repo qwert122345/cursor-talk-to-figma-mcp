@@ -3458,7 +3458,12 @@ type FigmaCommand =
   | "set_vector_paths"
   | "create_vector_from_svg"
   | "set_text_style"
-  | "set_stroke_style";
+  | "set_stroke_style"
+  | "set_size_constraints"
+  | "set_visible"
+  | "clear_fills"
+  | "create_component_from_node"
+  | "add_component_property";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4493,6 +4498,77 @@ server.tool(
       };
     }
   }
+);
+
+// 컴포넌트 제작 보조 도구들은 응답 형식이 같아서 공통 핸들러로 감싼다
+function jsonToolHandler(command: FigmaCommand, label: string) {
+  return async (params: any) => {
+    try {
+      const result = await sendCommandToFigma(command, params, 60000);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Error ${label}: ${error instanceof Error ? error.message : String(error)}`,
+        }],
+      };
+    }
+  };
+}
+
+server.tool(
+  "set_size_constraints",
+  "Set min/max width and height on auto-layout frames or auto-layout children (e.g. a HUG text that should wrap at a max width). Pass null to clear a value; omitted values are unchanged.",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("Nodes to update"),
+    minWidth: z.number().min(0).nullable().optional(),
+    maxWidth: z.number().min(0).nullable().optional(),
+    minHeight: z.number().min(0).nullable().optional(),
+    maxHeight: z.number().min(0).nullable().optional(),
+  },
+  jsonToolHandler("set_size_constraints", "setting size constraints")
+);
+
+server.tool(
+  "set_visible",
+  "Show or hide many nodes at once (layer eye toggle). Hidden auto-layout children take no space.",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("Nodes to show or hide"),
+    visible: z.boolean().describe("true to show, false to hide"),
+  },
+  jsonToolHandler("set_visible", "setting visibility")
+);
+
+server.tool(
+  "clear_fills",
+  "Remove every fill from the given nodes (fills = []), unlike set_fill_color with alpha 0 which leaves a transparent fill behind.",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("Nodes whose fills to remove"),
+  },
+  jsonToolHandler("clear_fills", "clearing fills")
+);
+
+server.tool(
+  "create_component_from_node",
+  "Convert a frame (or other node) into a component in place, like Create component (Cmd+Opt+K). Returns the new component id; the old node id is no longer valid.",
+  {
+    nodeId: z.string().describe("Node to convert"),
+  },
+  jsonToolHandler("create_component_from_node", "creating component")
+);
+
+server.tool(
+  "add_component_property",
+  "Add a BOOLEAN or TEXT property to a component (or the set of a variant) and bind descendant layers to it: BOOLEAN controls layer visibility, TEXT controls text characters.",
+  {
+    componentId: z.string().describe("Component, component set, or variant id"),
+    name: z.string().describe("Property name shown in the properties panel"),
+    type: z.enum(["BOOLEAN", "TEXT"]),
+    defaultValue: z.union([z.boolean(), z.string()]).describe("boolean for BOOLEAN, string for TEXT"),
+    bindNodeIds: z.array(z.string()).optional().describe("Descendant layers to bind to the property"),
+  },
+  jsonToolHandler("add_component_property", "adding component property")
 );
 
 // Start the server

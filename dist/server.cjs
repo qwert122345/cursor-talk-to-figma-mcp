@@ -3486,6 +3486,70 @@ server.tool(
     }
   }
 );
+function jsonToolHandler(command, label) {
+  return async (params) => {
+    try {
+      const result = await sendCommandToFigma(command, params, 6e4);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text",
+          text: `Error ${label}: ${error instanceof Error ? error.message : String(error)}`
+        }]
+      };
+    }
+  };
+}
+server.tool(
+  "set_size_constraints",
+  "Set min/max width and height on auto-layout frames or auto-layout children (e.g. a HUG text that should wrap at a max width). Pass null to clear a value; omitted values are unchanged.",
+  {
+    nodeIds: import_zod.z.array(import_zod.z.string()).min(1).describe("Nodes to update"),
+    minWidth: import_zod.z.number().min(0).nullable().optional(),
+    maxWidth: import_zod.z.number().min(0).nullable().optional(),
+    minHeight: import_zod.z.number().min(0).nullable().optional(),
+    maxHeight: import_zod.z.number().min(0).nullable().optional()
+  },
+  jsonToolHandler("set_size_constraints", "setting size constraints")
+);
+server.tool(
+  "set_visible",
+  "Show or hide many nodes at once (layer eye toggle). Hidden auto-layout children take no space.",
+  {
+    nodeIds: import_zod.z.array(import_zod.z.string()).min(1).describe("Nodes to show or hide"),
+    visible: import_zod.z.boolean().describe("true to show, false to hide")
+  },
+  jsonToolHandler("set_visible", "setting visibility")
+);
+server.tool(
+  "clear_fills",
+  "Remove every fill from the given nodes (fills = []), unlike set_fill_color with alpha 0 which leaves a transparent fill behind.",
+  {
+    nodeIds: import_zod.z.array(import_zod.z.string()).min(1).describe("Nodes whose fills to remove")
+  },
+  jsonToolHandler("clear_fills", "clearing fills")
+);
+server.tool(
+  "create_component_from_node",
+  "Convert a frame (or other node) into a component in place, like Create component (Cmd+Opt+K). Returns the new component id; the old node id is no longer valid.",
+  {
+    nodeId: import_zod.z.string().describe("Node to convert")
+  },
+  jsonToolHandler("create_component_from_node", "creating component")
+);
+server.tool(
+  "add_component_property",
+  "Add a BOOLEAN or TEXT property to a component (or the set of a variant) and bind descendant layers to it: BOOLEAN controls layer visibility, TEXT controls text characters.",
+  {
+    componentId: import_zod.z.string().describe("Component, component set, or variant id"),
+    name: import_zod.z.string().describe("Property name shown in the properties panel"),
+    type: import_zod.z.enum(["BOOLEAN", "TEXT"]),
+    defaultValue: import_zod.z.union([import_zod.z.boolean(), import_zod.z.string()]).describe("boolean for BOOLEAN, string for TEXT"),
+    bindNodeIds: import_zod.z.array(import_zod.z.string()).optional().describe("Descendant layers to bind to the property")
+  },
+  jsonToolHandler("add_component_property", "adding component property")
+);
 async function main() {
   try {
     connectToFigma();

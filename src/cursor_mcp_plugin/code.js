@@ -302,6 +302,16 @@ async function handleCommand(command, params) {
       return await setTextStyle(params);
     case "set_stroke_style":
       return await setStrokeStyle(params);
+    case "set_size_constraints":
+      return await setSizeConstraints(params);
+    case "set_visible":
+      return await setVisible(params);
+    case "clear_fills":
+      return await clearFills(params);
+    case "create_component_from_node":
+      return await createComponentFromNode(params);
+    case "add_component_property":
+      return await addComponentProperty(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -4755,8 +4765,13 @@ async function setAxisAlign(params) {
 
 // E-9: 텍스트 노드도 대상에 포함한다. 오토레이아웃 자식인 TEXT 는
 // layoutSizingHorizontal/Vertical 을 실제로 지원하는데 기존 구현이 막고 있었다.
+// 오토레이아웃 자식인 도형(LINE 등)도 FIXED/FILL 을 지원한다. 점선 LINE 을 FILL 로
+// 늘려야 하는 경우가 있어서 허용한다 (HUG 는 아래 validate 에서 막힌다).
 function applyLayoutSizing(node, layoutSizingHorizontal, layoutSizingVertical) {
-  const SIZABLE = ["FRAME", "COMPONENT", "COMPONENT_SET", "INSTANCE", "TEXT"];
+  const SIZABLE = [
+    "FRAME", "COMPONENT", "COMPONENT_SET", "INSTANCE", "TEXT",
+    "LINE", "RECTANGLE", "ELLIPSE", "VECTOR",
+  ];
   if (!SIZABLE.includes(node.type)) {
     throw new Error(`Node type ${node.type} does not support layout sizing`);
   }
@@ -7616,4 +7631,147 @@ async function getComponentProperties(params) {
     components: results,
     failed: failed,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 컴포넌트 제작 보조 명령: 크기 제한, 표시 여부, fill 비우기, 컴포넌트 변환, 속성 추가
+// ---------------------------------------------------------------------------
+
+async function getNodesOrThrow(nodeIds) {
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("nodeIds must be a non-empty array");
+  }
+  const nodes = [];
+  for (const id of nodeIds) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) throw new Error(`Node not found with ID: ${id}`);
+    nodes.push(node);
+  }
+  return nodes;
+}
+
+// min/max width·height. null 을 주면 해제, 생략하면 그대로 둔다.
+// 오토레이아웃 프레임이나 오토레이아웃 자식에서만 Figma 가 허용한다.
+async function setSizeConstraints(params) {
+  const { nodeIds } = params || {};
+  const keys = ["minWidth", "maxWidth", "minHeight", "maxHeight"];
+  const nodes = await getNodesOrThrow(nodeIds);
+  const results = [];
+  for (const node of nodes) {
+    try {
+      for (const key of keys) {
+        if (params[key] === undefined) continue;
+        if (!(key in node)) throw new Error(`Node type ${node.type} does not support ${key}`);
+        node[key] = params[key];
+      }
+      const entry = { id: node.id, name: node.name, success: true };
+      for (const key of keys) entry[key] = node[key];
+      results.push(entry);
+    } catch (error) {
+      results.push({ id: node.id, name: node.name, success: false, error: error.message });
+    }
+  }
+  return { updated: results.filter((r) => r.success).length, results };
+}
+
+async function setVisible(params) {
+  const { nodeIds, visible } = params || {};
+  if (typeof visible !== "boolean") throw new Error("visible must be a boolean");
+  const nodes = await getNodesOrThrow(nodeIds);
+  const results = [];
+  for (const node of nodes) {
+    try {
+      node.visible = visible;
+      results.push({ id: node.id, name: node.name, visible: node.visible, success: true });
+    } catch (error) {
+      results.push({ id: node.id, name: node.name, success: false, error: error.message });
+    }
+  }
+  return { updated: results.filter((r) => r.success).length, results };
+}
+
+// set_fill_color 에 a=0 을 주면 투명 fill 이 남는다. 레이어 패널에서 fill 을
+// 지운 것과 같은 상태(fills = [])를 만든다.
+async function clearFills(params) {
+  const nodes = await getNodesOrThrow((params || {}).nodeIds);
+  const results = [];
+  for (const node of nodes) {
+    try {
+      if (!("fills" in node)) throw new Error(`Node type ${node.type} has no fills`);
+      node.fills = [];
+      results.push({ id: node.id, name: node.name, success: true });
+    } catch (error) {
+      results.push({ id: node.id, name: node.name, success: false, error: error.message });
+    }
+  }
+  return { updated: results.filter((r) => r.success).length, results };
+}
+
+// 프레임을 그 자리에서 컴포넌트로 바꾼다 (⌘⌥K 와 동일). 새 노드 ID 가 생긴다.
+async function createComponentFromNode(params) {
+  const { nodeId } = params || {};
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (node.type === "COMPONENT" || node.type === "COMPONENT_SET") {
+    throw new Error(`Node ${nodeId} is already a ${node.type}`);
+  }
+  const component = figma.createComponentFromNode(node);
+  return {
+    id: component.id,
+    name: component.name,
+    key: component.key,
+    previousId: nodeId,
+  };
+}
+
+// BOOLEAN/TEXT 컴포넌트 속성을 추가하고 하위 레이어에 연결한다.
+// BOOLEAN → 레이어 visible, TEXT → 텍스트 characters.
+async function addComponentProperty(params) {
+  const { componentId, name, type, defaultValue, bindNodeIds } = params || {};
+  let target = await figma.getNodeByIdAsync(componentId);
+  if (!target) throw new Error(`Node not found with ID: ${componentId}`);
+  // variant 하나를 넘겨도 속성은 세트에 정의된다
+  if (target.type === "COMPONENT" && target.parent && target.parent.type === "COMPONENT_SET") {
+    target = target.parent;
+  }
+  if (target.type !== "COMPONENT" && target.type !== "COMPONENT_SET") {
+    throw new Error(`Node ${componentId} is ${target.type}, not a component`);
+  }
+  if (type !== "BOOLEAN" && type !== "TEXT") {
+    throw new Error("type must be BOOLEAN or TEXT");
+  }
+  if (type === "BOOLEAN" && typeof defaultValue !== "boolean") {
+    throw new Error("BOOLEAN property needs a boolean defaultValue");
+  }
+  if (type === "TEXT" && typeof defaultValue !== "string") {
+    throw new Error("TEXT property needs a string defaultValue");
+  }
+
+  const propertyKey = target.addComponentProperty(name, type, defaultValue);
+  const field = type === "BOOLEAN" ? "visible" : "characters";
+
+  const bound = [];
+  const failed = [];
+  for (const id of bindNodeIds || []) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) {
+      failed.push({ id, error: "not found" });
+      continue;
+    }
+    try {
+      if (type === "TEXT" && node.type !== "TEXT") {
+        throw new Error(`TEXT property can only bind TEXT nodes, got ${node.type}`);
+      }
+      node.componentPropertyReferences = Object.assign(
+        {},
+        node.componentPropertyReferences || {},
+        { [field]: propertyKey }
+      );
+      bound.push({ id: node.id, name: node.name });
+    } catch (error) {
+      failed.push({ id, name: node.name, error: error.message });
+    }
+  }
+
+  return { componentId: target.id, propertyKey, type, field, bound, failed };
 }
