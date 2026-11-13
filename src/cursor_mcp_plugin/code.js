@@ -7845,17 +7845,23 @@ async function editComponentPropertyCmd(params) {
   return { componentId: target.id, key, action: "edit", dryRun: !!dryRun, before, after, boundLayers };
 }
 
-// E-29: 범위 안의 fills·strokes(SOLID)에 묶인 색 변수 중 sourceCollection 소속을,
-// 그 변수가 mode 에서 가리키는 별칭(다른 컬렉션이 나올 때까지 따라감)으로 다시 묶는다.
-// 예: CL/SEM → Light 모드 별칭(CL/PRI). 문서 페이지 장식을 PRI 로 바꿀 때.
-// 기본은 인스턴스·컴포넌트 안쪽을 건너뛴다(includeInstances:true 로 포함 — 오버라이드가 생긴다).
+// E-29: 범위 안 바인딩 중 sourceCollection(로컬·원격 모두, 컬렉션 "이름"으로 판정) 소속을 다시 묶는다.
+//  - 대상 찾기 matchBy:
+//    "alias"(기본) — 그 변수가 mode 에서 가리키는 별칭(다른 컬렉션이 나올 때까지). mode "auto" = 노드가 렌더되던 모드.
+//                    원격 변수는 같은 컬렉션 이름·같은 변수 이름의 로컬 변수로 먼저 바꿔 읽는다.
+//    "value"        — targetCollection 의 로컬 변수 중 노드에서 같은 값으로 풀리는 것(숫자는 이름 그룹 Spacing/Radius/Stroke 로 좁힘). 옛 라이브러리 → 로컬.
+//  - 속성: fills·strokes(SOLID, 혼합 서식 TEXT 는 구간별), 숫자(itemSpacing·counterAxisSpacing·padding·radius·strokeWeight).
+//  - 기본은 인스턴스·컴포넌트 안쪽을 건너뛴다(includeInstances:true 로 포함).
 async function replaceVariableBindings(params) {
   params = params || {};
   var sourceCollection = params.sourceCollection;
-  var modeName = params.mode;
+  var modeName = params.mode || "auto";
+  var matchBy = params.matchBy || "alias";
+  var targetCollection = params.targetCollection;
   var dryRun = params.dryRun === true;
   var includeInstances = params.includeInstances === true;
-  if (!sourceCollection || !modeName) throw new Error("sourceCollection and mode are required");
+  if (!sourceCollection) throw new Error("sourceCollection is required");
+  if (matchBy === "value" && !targetCollection) throw new Error("matchBy value needs targetCollection");
 
   var root;
   if (params.nodeId) {
@@ -7872,17 +7878,39 @@ async function replaceVariableBindings(params) {
   var collections = await figma.variables.getLocalVariableCollectionsAsync();
   var collById = {};
   for (var c = 0; c < collections.length; c++) collById[collections[c].id] = collections[c];
+  var localVars = await figma.variables.getLocalVariablesAsync();
+  var localByKey = {}; // "컬렉션이름|변수이름" -> var
+  for (var lv = 0; lv < localVars.length; lv++) {
+    var lc = collById[localVars[lv].variableCollectionId];
+    if (lc) localByKey[lc.name + "|" + localVars[lv].name] = localVars[lv];
+  }
   var varCache = {};
   async function getVar(id) {
-    if (!(id in varCache)) varCache[id] = await figma.variables.getVariableByIdAsync(id);
+    if (!(id in varCache)) { try { varCache[id] = await figma.variables.getVariableByIdAsync(id); } catch (e) { varCache[id] = null; } }
     return varCache[id];
   }
-  // mode "auto": 노드가 실제로 렌더되던 모드(resolvedVariableModes)를 따른다 — 프레임에 모드를 지정해 둔 예시 패널 보존.
-  async function resolveTarget(v, node) {
+  var remoteCollName = {};
+  async function collName(v) {
+    if (collById[v.variableCollectionId]) return collById[v.variableCollectionId].name;
+    if (!(v.variableCollectionId in remoteCollName)) {
+      var n = null;
+      try { var rc = await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId); n = rc ? rc.name : null; } catch (e) {}
+      remoteCollName[v.variableCollectionId] = n;
+    }
+    return remoteCollName[v.variableCollectionId];
+  }
+
+  var usedModes = {};
+  async function resolveAlias(v, node) {
     var cur = v;
     for (var hop = 0; hop < 6; hop++) {
       var coll = collById[cur.variableCollectionId];
-      if (!coll) return { error: "collection not local" };
+      if (!coll) {
+        var nm = await collName(cur);
+        var loc = nm ? localByKey[nm + "|" + cur.name] : null;
+        if (!loc) return { error: "remote " + (nm || "?") + " / " + cur.name + " has no local twin" };
+        cur = loc; coll = collById[cur.variableCollectionId];
+      }
       if (coll.name !== sourceCollection) return { variable: cur };
       var mode = null;
       if (modeName === "auto") {
@@ -7890,27 +7918,55 @@ async function replaceVariableBindings(params) {
         mode = rm ? coll.modes.find(function (m) { return m.modeId === rm; }) : null;
         if (!mode) mode = coll.modes.find(function (m) { return m.modeId === coll.defaultModeId; });
       } else {
-        mode = coll.modes.find(function (m) { return m.name === modeName; }) ||
-          (coll.modes.length === 1 ? coll.modes[0] : null);
+        mode = coll.modes.find(function (m) { return m.name === modeName; }) || (coll.modes.length === 1 ? coll.modes[0] : null);
       }
       if (!mode) return { error: "mode " + modeName + " not in " + coll.name };
-      if (modeName === "auto") usedModes[mode.name] = (usedModes[mode.name] || 0) + 1;
+      usedModes[mode.name] = (usedModes[mode.name] || 0) + 1;
       var val = cur.valuesByMode[mode.modeId];
-      if (!val || val.type !== "VARIABLE_ALIAS") return { error: "not an alias in " + modeName };
+      if (!val || val.type !== "VARIABLE_ALIAS") return { error: "not an alias in " + mode.name };
       cur = await getVar(val.id);
       if (!cur) return { error: "alias target missing" };
     }
     return { error: "alias chain too deep" };
   }
+  function sameValue(a, b) {
+    if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) < 0.001;
+    if (a && b && typeof a === "object") return ["r", "g", "b", "a"].every(function (k) { return Math.abs((a[k] || 0) - (b[k] || 0)) < 0.002; });
+    return a === b;
+  }
+  async function resolveByValue(v, node, family) {
+    var srcVal;
+    try { srcVal = v.resolveForConsumer(node).value; } catch (e) { return { error: "cannot resolve source value" }; }
+    var hits = [];
+    for (var i = 0; i < localVars.length; i++) {
+      var t = localVars[i];
+      var tc = collById[t.variableCollectionId];
+      if (!tc || tc.name !== targetCollection || t.resolvedType !== v.resolvedType) continue;
+      if (family && t.name.split("/")[0] !== family) continue;
+      var tv; try { tv = t.resolveForConsumer(node).value; } catch (e) { continue; }
+      if (sameValue(srcVal, tv)) hits.push(t);
+    }
+    if (hits.length === 1) return { variable: hits[0] };
+    if (hits.length === 0) return { error: "no " + targetCollection + (family ? "/" + family : "") + " var with value " + JSON.stringify(srcVal) };
+    return { error: "ambiguous: " + hits.map(function (h) { return h.name; }).join(", ") };
+  }
+  async function findTarget(v, node, family) {
+    return matchBy === "value" ? resolveByValue(v, node, family) : resolveAlias(v, node);
+  }
 
-  var usedModes = {};
-  var nodes = [root].concat(root.findAll ? root.findAll(function () { return true; }) : []);
-  var byMapping = {};
-  var skippedInside = {};
-  var unresolved = [];
-  var gradientBound = 0;
-  var changed = [];
+  var NUM_FIELDS = {
+    itemSpacing: "Spacing", counterAxisSpacing: "Spacing",
+    paddingLeft: "Spacing", paddingRight: "Spacing", paddingTop: "Spacing", paddingBottom: "Spacing",
+    topLeftRadius: "Radius", topRightRadius: "Radius", bottomLeftRadius: "Radius", bottomRightRadius: "Radius",
+    strokeWeight: "Stroke", strokeTopWeight: "Stroke", strokeBottomWeight: "Stroke", strokeLeftWeight: "Stroke", strokeRightWeight: "Stroke",
+  };
 
+  var byMapping = {}, skippedInside = {}, unresolved = [], changed = {}, gradientBound = 0;
+  function record(label, nodeId) {
+    if (!byMapping[label]) byMapping[label] = { count: 0, nodeIds: [] };
+    byMapping[label].count++;
+    if (byMapping[label].nodeIds.length < 30) byMapping[label].nodeIds.push(nodeId);
+  }
   function insideInstanceOrComponent(n) {
     var p = n.parent;
     while (p && p.type !== "PAGE" && p.type !== "DOCUMENT") {
@@ -7919,58 +7975,82 @@ async function replaceVariableBindings(params) {
     }
     return n.type === "COMPONENT" || n.type === "COMPONENT_SET";
   }
+  async function inSource(v) { var n = await collName(v); return n === sourceCollection; }
+  async function processPaints(node, paints, where) {
+    var next = paints.slice(), touched = false;
+    for (var k = 0; k < paints.length; k++) {
+      var paint = paints[k];
+      if (paint.type !== "SOLID") {
+        if (paint.gradientStops && paint.gradientStops.some(function (gs) { return gs.boundVariables && gs.boundVariables.color; })) gradientBound++;
+        continue;
+      }
+      var b = paint.boundVariables && paint.boundVariables.color;
+      if (!b) continue;
+      var v = await getVar(b.id);
+      if (!v || !(await inSource(v))) continue;
+      if (!includeInstances && insideInstanceOrComponent(node)) { skippedInside[v.name] = (skippedInside[v.name] || 0) + 1; continue; }
+      var t = await findTarget(v, node, null);
+      if (t.error) { unresolved.push({ nodeId: node.id, name: node.name, where: where, variable: v.name, reason: t.error }); continue; }
+      record(sourceCollection + " / " + v.name + (v.remote ? " (remote)" : "") + " -> " + collById[t.variable.variableCollectionId].name + " / " + t.variable.name + " [" + where.split(":")[0] + "]", node.id);
+      next[k] = figma.variables.setBoundVariableForPaint(paint, "color", t.variable);
+      touched = true;
+    }
+    return touched ? next : null;
+  }
 
+  var nodes = [root].concat(root.findAll ? root.findAll(function () { return true; }) : []);
   for (var i = 0; i < nodes.length; i++) {
     var node = nodes[i];
+    // 색
     var props = ["fills", "strokes"];
     for (var pi = 0; pi < props.length; pi++) {
       var prop = props[pi];
       if (!(prop in node)) continue;
       var paints = node[prop];
-      if (paints === figma.mixed || !Array.isArray(paints) || paints.length === 0) continue;
-      var next = paints.slice();
-      var touched = false;
-      for (var k = 0; k < paints.length; k++) {
-        var paint = paints[k];
-        if (paint.type !== "SOLID") {
-          if (paint.gradientStops && paint.gradientStops.some(function (gs) { return gs.boundVariables && gs.boundVariables.color; })) gradientBound++;
-          continue;
+      if (prop === "fills" && paints === figma.mixed && node.type === "TEXT") {
+        var segs = node.getStyledTextSegments(["fills"]);
+        for (var sg = 0; sg < segs.length; sg++) {
+          var nx = await processPaints(node, segs[sg].fills, "textRange:" + segs[sg].start + "-" + segs[sg].end);
+          if (nx && !dryRun) {
+            try {
+              await Promise.all(node.getRangeAllFontNames(segs[sg].start, segs[sg].end).map(function (f) { return figma.loadFontAsync(f); }));
+              node.setRangeFills(segs[sg].start, segs[sg].end, nx); changed[node.id] = true;
+            } catch (e) { unresolved.push({ nodeId: node.id, name: node.name, where: "textRange", reason: e.message }); }
+          }
         }
-        var b = paint.boundVariables && paint.boundVariables.color;
-        if (!b) continue;
-        var v = await getVar(b.id);
-        if (!v) continue;
-        var coll = collById[v.variableCollectionId];
-        if (!coll || coll.name !== sourceCollection) continue;
-        if (!includeInstances && insideInstanceOrComponent(node)) {
-          skippedInside[v.name] = (skippedInside[v.name] || 0) + 1;
-          continue;
-        }
-        var t = await resolveTarget(v, node);
-        if (t.error) { unresolved.push({ nodeId: node.id, name: node.name, prop: prop, variable: v.name, reason: t.error }); continue; }
-        var tColl = collById[t.variable.variableCollectionId];
-        var label = sourceCollection + " / " + v.name + " -> " + (tColl ? tColl.name : "?") + " / " + t.variable.name +
-          (modeName === "auto" && node.resolvedVariableModes ? " [" + ((coll.modes.find(function (m) { return m.modeId === node.resolvedVariableModes[coll.id]; }) || {}).name || "default") + "]" : "");
-        if (!byMapping[label]) byMapping[label] = { count: 0, nodeIds: [] };
-        byMapping[label].count++;
-        if (byMapping[label].nodeIds.length < 50) byMapping[label].nodeIds.push(node.id);
-        if (!dryRun) {
-          next[k] = figma.variables.setBoundVariableForPaint(paint, "color", t.variable);
-          touched = true;
-        }
+        continue;
       }
-      if (touched) {
-        try { node[prop] = next; changed.push(node.id); }
-        catch (e) { unresolved.push({ nodeId: node.id, name: node.name, prop: prop, reason: e.message }); }
+      if (paints === figma.mixed || !Array.isArray(paints) || paints.length === 0) continue;
+      var nxt = await processPaints(node, paints, prop);
+      if (nxt && !dryRun) {
+        try { node[prop] = nxt; changed[node.id] = true; }
+        catch (e) { unresolved.push({ nodeId: node.id, name: node.name, where: prop, reason: e.message }); }
+      }
+    }
+    // 숫자
+    var bv = node.boundVariables || {};
+    for (var field in NUM_FIELDS) {
+      var ref = bv[field];
+      if (!ref || Array.isArray(ref)) continue;
+      var nv = await getVar(ref.id);
+      if (!nv || !(await inSource(nv))) continue;
+      if (!includeInstances && insideInstanceOrComponent(node)) { skippedInside[nv.name] = (skippedInside[nv.name] || 0) + 1; continue; }
+      var tg = await findTarget(nv, node, NUM_FIELDS[field]);
+      if (tg.error) { unresolved.push({ nodeId: node.id, name: node.name, where: field, variable: nv.name, reason: tg.error }); continue; }
+      record(sourceCollection + " / " + nv.name + (nv.remote ? " (remote)" : "") + " -> " + collById[tg.variable.variableCollectionId].name + " / " + tg.variable.name + " [" + field + "]", node.id);
+      if (!dryRun) {
+        try { node.setBoundVariable(field, tg.variable); changed[node.id] = true; }
+        catch (e) { unresolved.push({ nodeId: node.id, name: node.name, where: field, reason: e.message }); }
       }
     }
   }
   var total = 0;
   for (var key in byMapping) total += byMapping[key].count;
   return {
-    root: root.id, sourceCollection: sourceCollection, mode: modeName, dryRun: dryRun,
+    root: root.id, sourceCollection: sourceCollection, matchBy: matchBy, mode: modeName, targetCollection: targetCollection || null, dryRun: dryRun,
     rebound: total, usedModes: usedModes, byMapping: byMapping, skippedInsideInstances: skippedInside,
-    gradientStopsBoundSkipped: gradientBound, unresolved: unresolved, changedNodes: dryRun ? 0 : changed.length,
+    gradientStopsBoundSkipped: gradientBound, unresolved: unresolved.slice(0, 50), unresolvedCount: unresolved.length,
+    changedNodes: dryRun ? 0 : Object.keys(changed).length,
   };
 }
 

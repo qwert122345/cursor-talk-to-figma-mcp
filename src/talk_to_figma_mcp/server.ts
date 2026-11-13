@@ -4599,12 +4599,14 @@ server.tool(
 
 server.tool(
   "replace_variable_bindings",
-  "Rebind color variables on fills and strokes (SOLID paints) within a page or node: every paint bound to a variable from sourceCollection (e.g. CL/SEM) is rebound to the variable it aliases in the given mode (e.g. Light), following the alias chain until it leaves sourceCollection (e.g. into CL/PRI). Use it to move documentation decoration from semantic to primitive tokens. Skips nodes inside instances and components unless includeInstances (which would create overrides). Reports per-mapping counts with node ids, skipped-inside counts, gradient-stop bindings (not handled) and unresolved paints. Pass dryRun first.",
+  "Rebind variables within a page or node. Every binding whose variable belongs to sourceCollection (matched by collection NAME, so remote/library variables count too) is rebound. matchBy 'alias' (default): bind what the variable aliases in mode (\"auto\" = each node's rendered mode, keeps Dark-pinned frames looking the same), following the chain out of sourceCollection; a remote variable is first swapped for the local variable with the same collection and name. matchBy 'value': bind the local variable in targetCollection that resolves to the same value on that node (numbers narrowed to the Spacing/Radius/Stroke group by property) — use it to move old-library bindings to local tokens. Covers fills/strokes (SOLID; mixed-fill TEXT per range) and numeric fields (itemSpacing, counterAxisSpacing, padding, corner radii, stroke weights). Skips nodes inside instances and components unless includeInstances. Pass dryRun first.",
   {
     nodeId: z.string().optional().describe("Limit to this node and its children"),
     pageName: z.string().optional().describe("Or a whole page by name"),
-    sourceCollection: z.string().describe("Collection whose bindings to replace, e.g. CL/SEM"),
-    mode: z.string().describe("Mode whose alias target to bind, e.g. Light — or \"auto\" to follow each node's rendered mode (keeps frames pinned to Dark looking the same)"),
+    sourceCollection: z.string().describe("Collection name whose bindings to replace, e.g. CL/SEM or Semantic/Scale"),
+    matchBy: z.enum(["alias", "value"]).optional().describe("alias (default) or value"),
+    mode: z.string().optional().describe("For alias: mode name, or \"auto\" (default) to follow each node's rendered mode"),
+    targetCollection: z.string().optional().describe("For value: local collection to pick the same-valued variable from, e.g. NUM/SEM"),
     includeInstances: z.boolean().optional().describe("Also rebind inside instances/components (creates overrides)"),
     dryRun: z.boolean().optional().describe("Report what would change without writing"),
   },
