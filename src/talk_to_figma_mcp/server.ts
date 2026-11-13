@@ -3465,7 +3465,8 @@ type FigmaCommand =
   | "create_component_from_node"
   | "add_component_property"
   | "combine_as_variants"
-  | "edit_component_property";
+  | "edit_component_property"
+  | "replace_variable_bindings";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4594,6 +4595,20 @@ server.tool(
     dryRun: z.boolean().optional().describe("Report what would change without writing"),
   },
   jsonToolHandler("edit_component_property", "editing component property")
+);
+
+server.tool(
+  "replace_variable_bindings",
+  "Rebind color variables on fills and strokes (SOLID paints) within a page or node: every paint bound to a variable from sourceCollection (e.g. CL/SEM) is rebound to the variable it aliases in the given mode (e.g. Light), following the alias chain until it leaves sourceCollection (e.g. into CL/PRI). Use it to move documentation decoration from semantic to primitive tokens. Skips nodes inside instances and components unless includeInstances (which would create overrides). Reports per-mapping counts with node ids, skipped-inside counts, gradient-stop bindings (not handled) and unresolved paints. Pass dryRun first.",
+  {
+    nodeId: z.string().optional().describe("Limit to this node and its children"),
+    pageName: z.string().optional().describe("Or a whole page by name"),
+    sourceCollection: z.string().describe("Collection whose bindings to replace, e.g. CL/SEM"),
+    mode: z.string().describe("Mode whose alias target to bind, e.g. Light — or \"auto\" to follow each node's rendered mode (keeps frames pinned to Dark looking the same)"),
+    includeInstances: z.boolean().optional().describe("Also rebind inside instances/components (creates overrides)"),
+    dryRun: z.boolean().optional().describe("Report what would change without writing"),
+  },
+  jsonToolHandler("replace_variable_bindings", "replacing variable bindings")
 );
 
 // Start the server

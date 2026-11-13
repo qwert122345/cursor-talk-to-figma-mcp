@@ -316,6 +316,8 @@ async function handleCommand(command, params) {
       return await combineAsVariants(params);
     case "edit_component_property":
       return await editComponentPropertyCmd(params);
+    case "replace_variable_bindings":
+      return await replaceVariableBindings(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -7841,6 +7843,135 @@ async function editComponentPropertyCmd(params) {
   if (!dryRun) target.editComponentProperty(key, { defaultValue: value });
   const after = dryRun ? null : { defaultValue: (target.componentPropertyDefinitions[key] || {}).defaultValue };
   return { componentId: target.id, key, action: "edit", dryRun: !!dryRun, before, after, boundLayers };
+}
+
+// E-29: 범위 안의 fills·strokes(SOLID)에 묶인 색 변수 중 sourceCollection 소속을,
+// 그 변수가 mode 에서 가리키는 별칭(다른 컬렉션이 나올 때까지 따라감)으로 다시 묶는다.
+// 예: CL/SEM → Light 모드 별칭(CL/PRI). 문서 페이지 장식을 PRI 로 바꿀 때.
+// 기본은 인스턴스·컴포넌트 안쪽을 건너뛴다(includeInstances:true 로 포함 — 오버라이드가 생긴다).
+async function replaceVariableBindings(params) {
+  params = params || {};
+  var sourceCollection = params.sourceCollection;
+  var modeName = params.mode;
+  var dryRun = params.dryRun === true;
+  var includeInstances = params.includeInstances === true;
+  if (!sourceCollection || !modeName) throw new Error("sourceCollection and mode are required");
+
+  var root;
+  if (params.nodeId) {
+    root = await figma.getNodeByIdAsync(params.nodeId);
+    if (!root) throw new Error("Node not found: " + params.nodeId);
+  } else if (params.pageName) {
+    root = figma.root.children.find(function (p) { return p.name === params.pageName; });
+    if (!root) throw new Error("Page not found: " + params.pageName);
+    await root.loadAsync();
+  } else {
+    throw new Error("nodeId or pageName is required");
+  }
+
+  var collections = await figma.variables.getLocalVariableCollectionsAsync();
+  var collById = {};
+  for (var c = 0; c < collections.length; c++) collById[collections[c].id] = collections[c];
+  var varCache = {};
+  async function getVar(id) {
+    if (!(id in varCache)) varCache[id] = await figma.variables.getVariableByIdAsync(id);
+    return varCache[id];
+  }
+  // mode "auto": 노드가 실제로 렌더되던 모드(resolvedVariableModes)를 따른다 — 프레임에 모드를 지정해 둔 예시 패널 보존.
+  async function resolveTarget(v, node) {
+    var cur = v;
+    for (var hop = 0; hop < 6; hop++) {
+      var coll = collById[cur.variableCollectionId];
+      if (!coll) return { error: "collection not local" };
+      if (coll.name !== sourceCollection) return { variable: cur };
+      var mode = null;
+      if (modeName === "auto") {
+        var rm = node && node.resolvedVariableModes ? node.resolvedVariableModes[coll.id] : null;
+        mode = rm ? coll.modes.find(function (m) { return m.modeId === rm; }) : null;
+        if (!mode) mode = coll.modes.find(function (m) { return m.modeId === coll.defaultModeId; });
+      } else {
+        mode = coll.modes.find(function (m) { return m.name === modeName; }) ||
+          (coll.modes.length === 1 ? coll.modes[0] : null);
+      }
+      if (!mode) return { error: "mode " + modeName + " not in " + coll.name };
+      if (modeName === "auto") usedModes[mode.name] = (usedModes[mode.name] || 0) + 1;
+      var val = cur.valuesByMode[mode.modeId];
+      if (!val || val.type !== "VARIABLE_ALIAS") return { error: "not an alias in " + modeName };
+      cur = await getVar(val.id);
+      if (!cur) return { error: "alias target missing" };
+    }
+    return { error: "alias chain too deep" };
+  }
+
+  var usedModes = {};
+  var nodes = [root].concat(root.findAll ? root.findAll(function () { return true; }) : []);
+  var byMapping = {};
+  var skippedInside = {};
+  var unresolved = [];
+  var gradientBound = 0;
+  var changed = [];
+
+  function insideInstanceOrComponent(n) {
+    var p = n.parent;
+    while (p && p.type !== "PAGE" && p.type !== "DOCUMENT") {
+      if (p.type === "INSTANCE" || p.type === "COMPONENT" || p.type === "COMPONENT_SET") return true;
+      p = p.parent;
+    }
+    return n.type === "COMPONENT" || n.type === "COMPONENT_SET";
+  }
+
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    var props = ["fills", "strokes"];
+    for (var pi = 0; pi < props.length; pi++) {
+      var prop = props[pi];
+      if (!(prop in node)) continue;
+      var paints = node[prop];
+      if (paints === figma.mixed || !Array.isArray(paints) || paints.length === 0) continue;
+      var next = paints.slice();
+      var touched = false;
+      for (var k = 0; k < paints.length; k++) {
+        var paint = paints[k];
+        if (paint.type !== "SOLID") {
+          if (paint.gradientStops && paint.gradientStops.some(function (gs) { return gs.boundVariables && gs.boundVariables.color; })) gradientBound++;
+          continue;
+        }
+        var b = paint.boundVariables && paint.boundVariables.color;
+        if (!b) continue;
+        var v = await getVar(b.id);
+        if (!v) continue;
+        var coll = collById[v.variableCollectionId];
+        if (!coll || coll.name !== sourceCollection) continue;
+        if (!includeInstances && insideInstanceOrComponent(node)) {
+          skippedInside[v.name] = (skippedInside[v.name] || 0) + 1;
+          continue;
+        }
+        var t = await resolveTarget(v, node);
+        if (t.error) { unresolved.push({ nodeId: node.id, name: node.name, prop: prop, variable: v.name, reason: t.error }); continue; }
+        var tColl = collById[t.variable.variableCollectionId];
+        var label = sourceCollection + " / " + v.name + " -> " + (tColl ? tColl.name : "?") + " / " + t.variable.name +
+          (modeName === "auto" && node.resolvedVariableModes ? " [" + ((coll.modes.find(function (m) { return m.modeId === node.resolvedVariableModes[coll.id]; }) || {}).name || "default") + "]" : "");
+        if (!byMapping[label]) byMapping[label] = { count: 0, nodeIds: [] };
+        byMapping[label].count++;
+        if (byMapping[label].nodeIds.length < 50) byMapping[label].nodeIds.push(node.id);
+        if (!dryRun) {
+          next[k] = figma.variables.setBoundVariableForPaint(paint, "color", t.variable);
+          touched = true;
+        }
+      }
+      if (touched) {
+        try { node[prop] = next; changed.push(node.id); }
+        catch (e) { unresolved.push({ nodeId: node.id, name: node.name, prop: prop, reason: e.message }); }
+      }
+    }
+  }
+  var total = 0;
+  for (var key in byMapping) total += byMapping[key].count;
+  return {
+    root: root.id, sourceCollection: sourceCollection, mode: modeName, dryRun: dryRun,
+    rebound: total, usedModes: usedModes, byMapping: byMapping, skippedInsideInstances: skippedInside,
+    gradientStopsBoundSkipped: gradientBound, unresolved: unresolved, changedNodes: dryRun ? 0 : changed.length,
+  };
 }
 
 // 컴포넌트 여러 개를 하나의 컴포넌트 세트로 합친다 (Combine as variants).
