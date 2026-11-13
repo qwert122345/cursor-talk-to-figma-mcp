@@ -314,6 +314,8 @@ async function handleCommand(command, params) {
       return await addComponentProperty(params);
     case "combine_as_variants":
       return await combineAsVariants(params);
+    case "edit_component_property":
+      return await editComponentPropertyCmd(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -7776,6 +7778,69 @@ async function addComponentProperty(params) {
   }
 
   return { componentId: target.id, propertyKey, type, field, bound, failed };
+}
+
+// E-28: 변이 아닌 컴포넌트 속성(BOOLEAN·TEXT·INSTANCE_SWAP)의 기본값을 바꾸거나 속성을 지운다.
+// property 는 맨이름("Show-Label") 또는 전체 키("Show-Label#612:58").
+// INSTANCE_SWAP 기본값은 컴포넌트 id(변이 COMPONENT 포함). VARIANT 기본값은 API 로 못 바꾼다(세트 안 변이 위치로 정해짐).
+// delete 는 연결돼 있던 레이어를 같이 보고한다 — 연결이 풀린 레이어는 마지막 값 그대로 남는다.
+async function editComponentPropertyCmd(params) {
+  const { componentId, property, defaultValue, remove, dryRun } = params || {};
+  let target = await figma.getNodeByIdAsync(componentId);
+  if (!target) throw new Error(`Node not found with ID: ${componentId}`);
+  if (target.type === "COMPONENT" && target.parent && target.parent.type === "COMPONENT_SET") {
+    target = target.parent;
+  }
+  if (target.type !== "COMPONENT" && target.type !== "COMPONENT_SET") {
+    throw new Error(`Node ${componentId} is ${target.type}, not a component`);
+  }
+  const defs = target.componentPropertyDefinitions || {};
+  const keys = Object.keys(defs);
+  let key = keys.find((k) => k === property);
+  if (!key) {
+    const hits = keys.filter((k) => k.split("#")[0] === property);
+    if (hits.length > 1) throw new Error(`Ambiguous property "${property}": ${hits.join(", ")}`);
+    key = hits[0];
+  }
+  if (!key) throw new Error(`Property "${property}" not found. Have: ${keys.join(", ")}`);
+  const def = defs[key];
+  if (def.type === "VARIANT") {
+    throw new Error("VARIANT default cannot be edited via API (it follows variant position in the set)");
+  }
+
+  // 이 속성에 연결된 레이어
+  const boundLayers = [];
+  const roots = target.type === "COMPONENT_SET" ? target.children : [target];
+  for (const root of roots) {
+    const all = [root].concat(root.findAll ? root.findAll(() => true) : []);
+    for (const n of all) {
+      const refs = n.componentPropertyReferences;
+      if (!refs) continue;
+      for (const field of Object.keys(refs)) {
+        if (refs[field] === key) {
+          boundLayers.push({ id: n.id, name: n.name, field, variant: root.name, visible: n.visible });
+        }
+      }
+    }
+  }
+
+  const before = { type: def.type, defaultValue: def.defaultValue };
+  if (remove) {
+    if (!dryRun) target.deleteComponentProperty(key);
+    return { componentId: target.id, key, action: "delete", dryRun: !!dryRun, before, boundLayers };
+  }
+  if (defaultValue === undefined) throw new Error("Pass defaultValue or remove:true");
+  let value = defaultValue;
+  if (def.type === "BOOLEAN" && typeof value !== "boolean") throw new Error("BOOLEAN needs a boolean defaultValue");
+  if (def.type === "TEXT" && typeof value !== "string") throw new Error("TEXT needs a string defaultValue");
+  if (def.type === "INSTANCE_SWAP") {
+    const comp = await figma.getNodeByIdAsync(String(value));
+    if (!comp || comp.type !== "COMPONENT") throw new Error(`INSTANCE_SWAP defaultValue must be a COMPONENT id, got ${value}`);
+    value = comp.id;
+  }
+  if (!dryRun) target.editComponentProperty(key, { defaultValue: value });
+  const after = dryRun ? null : { defaultValue: (target.componentPropertyDefinitions[key] || {}).defaultValue };
+  return { componentId: target.id, key, action: "edit", dryRun: !!dryRun, before, after, boundLayers };
 }
 
 // 컴포넌트 여러 개를 하나의 컴포넌트 세트로 합친다 (Combine as variants).

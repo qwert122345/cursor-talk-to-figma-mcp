@@ -3464,7 +3464,8 @@ type FigmaCommand =
   | "clear_fills"
   | "create_component_from_node"
   | "add_component_property"
-  | "combine_as_variants";
+  | "combine_as_variants"
+  | "edit_component_property";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4580,6 +4581,19 @@ server.tool(
     name: z.string().optional().describe("Name for the new component set"),
   },
   jsonToolHandler("combine_as_variants", "combining as variants")
+);
+
+server.tool(
+  "edit_component_property",
+  "Edit the default value of a non-variant component property (BOOLEAN, TEXT, INSTANCE_SWAP), or delete the property. property may be the bare name (\"Show-Label\") or the full key (\"Show-Label#612:58\"). INSTANCE_SWAP defaultValue is a COMPONENT id (a variant id is fine). VARIANT defaults cannot be edited (they follow variant position). Deleting reports the layers that were bound to it — they keep their last value. Pass dryRun first.",
+  {
+    componentId: z.string().describe("Component, component set, or variant id"),
+    property: z.string().describe("Property bare name or full key"),
+    defaultValue: z.union([z.boolean(), z.string()]).optional().describe("boolean for BOOLEAN, string for TEXT, COMPONENT id for INSTANCE_SWAP"),
+    remove: z.boolean().optional().describe("Delete the property instead of editing it"),
+    dryRun: z.boolean().optional().describe("Report what would change without writing"),
+  },
+  jsonToolHandler("edit_component_property", "editing component property")
 );
 
 // Start the server
