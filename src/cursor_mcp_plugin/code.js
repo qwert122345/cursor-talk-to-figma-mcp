@@ -318,6 +318,8 @@ async function handleCommand(command, params) {
       return await editComponentPropertyCmd(params);
     case "replace_variable_bindings":
       return await replaceVariableBindings(params);
+    case "rename_variables":
+      return await renameVariables(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -8078,5 +8080,107 @@ async function combineAsVariants(params) {
     key: set.key,
     variants: set.children.map((c) => ({ id: c.id, name: c.name })),
     variantGroupProperties: set.variantGroupProperties,
+  };
+}
+
+// E-30: 로컬 변수 이름을 한꺼번에 바꾼다. 변수는 id 로 묶이므로 이름을 바꿔도 바인딩·alias 는 그대로다.
+// 대상은 variableId, 또는 collection(컬렉션 이름) + name(현재 이름)으로 집는다.
+// 같은 컬렉션 안에서 이름이 겹치면(바꾼 뒤 기준) 그 항목은 쓰지 않고 errors 로 돌려준다.
+async function renameVariables(params) {
+  var items = (params && params.items) || [];
+  var dryRun = !!(params && params.dryRun);
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error("Missing or empty items parameter");
+  }
+
+  var collections = await figma.variables.getLocalVariableCollectionsAsync();
+  var variables = await figma.variables.getLocalVariablesAsync();
+  var collectionById = {};
+  collections.forEach(function (c) { collectionById[c.id] = c; });
+  var byId = {};
+  variables.forEach(function (v) { byId[v.id] = v; });
+
+  var plan = [];
+  var errors = [];
+  items.forEach(function (item, index) {
+    var newName = typeof item.newName === "string" ? item.newName.trim() : "";
+    var target = null;
+    if (item.variableId) {
+      target = byId[item.variableId] || null;
+    } else if (item.collection && item.name) {
+      var matches = variables.filter(function (v) {
+        var c = collectionById[v.variableCollectionId];
+        return c && c.name === item.collection && v.name === item.name;
+      });
+      if (matches.length > 1) {
+        errors.push({ index: index, item: item, error: "Ambiguous: " + matches.length + " variables match" });
+        return;
+      }
+      target = matches[0] || null;
+    }
+    if (!target) {
+      errors.push({ index: index, item: item, error: "Local variable not found" });
+      return;
+    }
+    if (!newName) {
+      errors.push({ index: index, item: item, error: "newName is empty" });
+      return;
+    }
+    plan.push({ variable: target, newName: newName });
+  });
+
+  // 바꾼 뒤 이름 기준으로 컬렉션 안 충돌을 본다.
+  var planned = {};
+  plan.forEach(function (p) { planned[p.variable.id] = p.newName; });
+  var finalNames = {};
+  variables.forEach(function (v) {
+    var name = planned[v.id] !== undefined ? planned[v.id] : v.name;
+    var key = v.variableCollectionId + "\u0000" + name;
+    (finalNames[key] = finalNames[key] || []).push(v.id);
+  });
+
+  var results = [];
+  var unchanged = [];
+  for (var i = 0; i < plan.length; i++) {
+    var p = plan[i];
+    var v = p.variable;
+    var collection = collectionById[v.variableCollectionId];
+    var collectionName = collection ? collection.name : null;
+    if (v.name === p.newName) {
+      unchanged.push({ id: v.id, collection: collectionName, name: v.name });
+      continue;
+    }
+    var clash = finalNames[v.variableCollectionId + "\u0000" + p.newName] || [];
+    if (clash.length > 1) {
+      errors.push({
+        variableId: v.id,
+        collection: collectionName,
+        name: v.name,
+        newName: p.newName,
+        error: "Name already used in this collection",
+      });
+      continue;
+    }
+    var previousName = v.name;
+    if (!dryRun) {
+      try {
+        v.name = p.newName;
+      } catch (error) {
+        errors.push({ variableId: v.id, collection: collectionName, name: previousName, newName: p.newName, error: error.message });
+        continue;
+      }
+    }
+    results.push({ id: v.id, key: v.key, collection: collectionName, previousName: previousName, name: p.newName });
+  }
+
+  return {
+    dryRun: dryRun,
+    requested: items.length,
+    renamed: results.length,
+    unchanged: unchanged.length,
+    failed: errors.length,
+    results: results,
+    unchangedItems: unchanged,
+    errors: errors,
   };
 }

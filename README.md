@@ -181,6 +181,7 @@ To develop, update your mcp config to direct to your local directory.
 | 커맨드 | 하는 일 | 구분 | |
 |---|---|:--:|:--:|
 | `get_local_variables` | 변수 컬렉션·변수 전부(모드·scope·모드별 값·alias 해석·색은 HEX). **`key` 포함** | R | |
+| `rename_variables` | 로컬 변수 이름 **일괄 개명**(`variableId` 또는 `collection`+`name` → `newName`). id 로 묶여 있어 바인딩·alias 는 유지. 컬렉션 안 이름 충돌은 쓰지 않고 `errors`. `dryRun` 먼저 | W | |
 | `get_styles` | 로컬 스타일. ⚠️ 텍스트 스타일은 `fontSize`·`fontName` 만 — **행간·자간은 안 준다** | R | |
 | `bind_variable` | 여러 노드의 한 속성을 변수에 **일괄 바인딩**(하드코딩 수정). 이미 묶인 건 `skipped`. **`dryRun` 이 "지금 묶여 있나"의 판별기** | W | |
 | `unbind_variable` | 위의 반대. 값은 남고 **렌더는 안 바뀐다**. `strokeWeight` 는 per-side 네 필드까지 훑는다. 색(`fills`)은 아직 안 받는다. ★ **stroke paint 가 없는 노드의 굵기 바인딩은 피그마 UI 에 안 떠서 손으로 못 지운다 — 이게 유일한 수단** | W | |

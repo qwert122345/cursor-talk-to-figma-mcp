@@ -3586,6 +3586,20 @@ server.tool(
   },
   jsonToolHandler("replace_variable_bindings", "replacing variable bindings")
 );
+server.tool(
+  "rename_variables",
+  'Rename local variables in bulk. A variable is referenced by id, so bindings and aliases survive a rename; consuming files pick the new name up after the library is published. Address each variable by variableId, or by collection (collection name) + name (current full name, e.g. "Spacing/x1_5"). A rename that would duplicate a name inside its collection is reported under errors and not written. Pass dryRun first.',
+  {
+    items: import_zod.z.array(import_zod.z.object({
+      variableId: import_zod.z.string().optional().describe("Variable id (VariableID:\u2026) from get_local_variables"),
+      collection: import_zod.z.string().optional().describe("Collection name, e.g. NUM/SEM \u2014 used with name when variableId is not given"),
+      name: import_zod.z.string().optional().describe("Current full variable name, e.g. Spacing/x1_5"),
+      newName: import_zod.z.string().describe("New full variable name, e.g. Spacing/150")
+    })).min(1).describe("Variables to rename"),
+    dryRun: import_zod.z.boolean().optional().describe("Report what would change without writing")
+  },
+  jsonToolHandler("rename_variables", "renaming variables")
+);
 async function main() {
   try {
     connectToFigma();

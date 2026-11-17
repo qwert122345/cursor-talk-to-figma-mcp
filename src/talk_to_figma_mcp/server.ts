@@ -3466,7 +3466,8 @@ type FigmaCommand =
   | "add_component_property"
   | "combine_as_variants"
   | "edit_component_property"
-  | "replace_variable_bindings";
+  | "replace_variable_bindings"
+  | "rename_variables";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4611,6 +4612,21 @@ server.tool(
     dryRun: z.boolean().optional().describe("Report what would change without writing"),
   },
   jsonToolHandler("replace_variable_bindings", "replacing variable bindings")
+);
+
+server.tool(
+  "rename_variables",
+  "Rename local variables in bulk. A variable is referenced by id, so bindings and aliases survive a rename; consuming files pick the new name up after the library is published. Address each variable by variableId, or by collection (collection name) + name (current full name, e.g. \"Spacing/x1_5\"). A rename that would duplicate a name inside its collection is reported under errors and not written. Pass dryRun first.",
+  {
+    items: z.array(z.object({
+      variableId: z.string().optional().describe("Variable id (VariableID:…) from get_local_variables"),
+      collection: z.string().optional().describe("Collection name, e.g. NUM/SEM — used with name when variableId is not given"),
+      name: z.string().optional().describe("Current full variable name, e.g. Spacing/x1_5"),
+      newName: z.string().describe("New full variable name, e.g. Spacing/150"),
+    })).min(1).describe("Variables to rename"),
+    dryRun: z.boolean().optional().describe("Report what would change without writing"),
+  },
+  jsonToolHandler("rename_variables", "renaming variables")
 );
 
 // Start the server
