@@ -7251,9 +7251,10 @@ async function bindVariable(params) {
     throw new Error("Missing or invalid nodeIds parameter");
   }
   if (!property) throw new Error("Missing property parameter");
-  if (property !== "fills" && !BIND_FIELDS[property]) {
+  var isPaint = property === "fills" || property === "strokes";
+  if (!isPaint && !BIND_FIELDS[property]) {
     throw new Error(
-      "Unsupported property: " + property + ". Supported: fills, " + Object.keys(BIND_FIELDS).join(", ")
+      "Unsupported property: " + property + ". Supported: fills, strokes, " + Object.keys(BIND_FIELDS).join(", ")
     );
   }
 
@@ -7299,10 +7300,10 @@ async function bindVariable(params) {
     throw new Error("Missing variableKey, variableId, variableFromNodeId or variableName parameter");
   }
 
-  if (property === "fills" && variable.resolvedType !== "COLOR") {
-    throw new Error("property 'fills' requires a COLOR variable, got " + variable.resolvedType);
+  if (isPaint && variable.resolvedType !== "COLOR") {
+    throw new Error("property '" + property + "' requires a COLOR variable, got " + variable.resolvedType);
   }
-  if (property !== "fills" && variable.resolvedType !== "FLOAT") {
+  if (!isPaint && variable.resolvedType !== "FLOAT") {
     throw new Error("property '" + property + "' requires a FLOAT variable, got " + variable.resolvedType);
   }
 
@@ -7330,10 +7331,11 @@ async function bindVariable(params) {
     }
 
     try {
-      if (property === "fills") {
-        var fills = node.fills;
+      if (property === "fills" || property === "strokes") {
+        var paintKey = property;
+        var fills = node[paintKey];
         if (fills === figma.mixed || !Array.isArray(fills) || fills.length === 0) {
-          skipped.push({ nodeId: id, name: node.name, reason: "no fills / mixed" });
+          skipped.push({ nodeId: id, name: node.name, reason: "no " + paintKey + " / mixed" });
           continue;
         }
         var idx = -1;
@@ -7341,7 +7343,7 @@ async function bindVariable(params) {
           if (fills[f].type === "SOLID") { idx = f; break; }
         }
         if (idx === -1) {
-          skipped.push({ nodeId: id, name: node.name, reason: "no SOLID fill" });
+          skipped.push({ nodeId: id, name: node.name, reason: "no SOLID " + paintKey });
           continue;
         }
         if (fills[idx].boundVariables && fills[idx].boundVariables.color && params.overwrite !== true) {
@@ -7352,15 +7354,24 @@ async function bindVariable(params) {
           bound.push({ nodeId: id, name: node.name, type: node.type, dryRun: true });
           continue;
         }
+        var origOpacity = typeof fills[idx].opacity === "number" ? fills[idx].opacity : 1;
         var next = fills.slice();
-        var boundPaint = figma.variables.setBoundVariableForPaint(next[idx], "color", variable);
-        // setBoundVariableForPaint 는 칠 투명도를 1 로 되돌린다 — 원래 값을 다시 넣는다.
-        if (typeof fills[idx].opacity === "number" && fills[idx].opacity !== 1) {
-          boundPaint = Object.assign({}, boundPaint, { opacity: fills[idx].opacity });
+        next[idx] = figma.variables.setBoundVariableForPaint(next[idx], "color", variable);
+        node[paintKey] = next;
+        // 묶는 순간 피그마가 칠 투명도를 변수 알파(보통 1)로 덮는다 — 묶인 뒤의 칠을 다시 읽어
+        // 투명도만 원래 값으로 한 번 더 쓴다(바인딩은 그대로 남는다).
+        var opacityKept = true;
+        if (origOpacity !== 1) {
+          var after = node[paintKey].slice();
+          after[idx] = Object.assign({}, after[idx], { opacity: origOpacity });
+          node[paintKey] = after;
+          var check = node[paintKey][idx];
+          opacityKept = Math.abs((typeof check.opacity === "number" ? check.opacity : 1) - origOpacity) < 0.001
+            && !!(check.boundVariables && check.boundVariables.color);
         }
-        next[idx] = boundPaint;
-        node.fills = next;
-        bound.push({ nodeId: id, name: node.name, type: node.type });
+        var rec = { nodeId: id, name: node.name, type: node.type };
+        if (origOpacity !== 1) { rec.opacity = origOpacity; rec.opacityKept = opacityKept; }
+        bound.push(rec);
       } else {
         var already = fields.every(function (fl) {
           return node.boundVariables && node.boundVariables[fl];
@@ -7385,7 +7396,7 @@ async function bindVariable(params) {
 
   return {
     property: property,
-    fields: property === "fills" ? ["fills[].color"] : fields,
+    fields: isPaint ? [property + "[].color"] : fields,
     variable: { id: variable.id, key: variable.key, name: variable.name, type: variable.resolvedType },
     dryRun: dryRun,
     requested: nodeIds.length,

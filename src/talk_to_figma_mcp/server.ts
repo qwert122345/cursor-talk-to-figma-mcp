@@ -1035,15 +1035,15 @@ server.tool(
 // Bind Variable Tool (E-18)
 server.tool(
   "bind_variable",
-  "Bind a variable to one property across many nodes at once — the fix for hardcoded literals. Pass variableKey (from get_local_variables, run against the LIBRARY file) to bind a published library variable in a consuming file; variableId only works for a variable local to the current file. property 'cornerRadius' binds all four corners; 'fills' binds the color of the first SOLID paint. Nodes already bound are reported under skipped, not overwritten. Pass dryRun first.",
+  "Bind a variable to one property across many nodes at once — the fix for hardcoded literals. Pass variableKey (from get_local_variables, run against the LIBRARY file) to bind a published library variable in a consuming file; variableId only works for a variable local to the current file. property 'cornerRadius' binds all four corners; 'fills'/'strokes' bind the color of the first SOLID paint and keep its opacity (re-written after binding; each result reports opacityKept). Nodes already bound are reported under skipped, not overwritten. Pass dryRun first.",
   {
     nodeIds: z.array(z.string()).describe("Node ids to bind"),
-    property: z.string().describe("fills | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
+    property: z.string().describe("fills | strokes | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
     variableKey: z.string().optional().describe("Key of a published variable (imported via importVariableByKeyAsync). Use this across files"),
     variableId: z.string().optional().describe("Id of a variable local to the current file"),
     variableName: z.string().optional().describe("Full name of a variable in an enabled library (e.g. CL/MT/case/label/warning), resolved via teamLibrary"),
     variableFromNodeId: z.string().optional().describe("Use the variable bound to this node's first SOLID fill (no library permission needed)"),
-    overwrite: z.boolean().optional().describe("fills only: rebind a fill already bound to another variable instead of skipping it"),
+    overwrite: z.boolean().optional().describe("fills/strokes only: rebind a paint already bound to another variable instead of skipping it"),
     dryRun: z.boolean().optional().describe("Report what would change without writing"),
   },
   async ({ nodeIds, property, variableKey, variableId, variableFromNodeId, variableName, overwrite, dryRun }: any) => {
