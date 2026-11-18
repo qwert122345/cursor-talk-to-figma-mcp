@@ -3637,6 +3637,22 @@ server.tool(
   },
   jsonToolHandler("create_text_styles", "creating text styles")
 );
+server.tool(
+  "set_hyperlink",
+  "Put a hyperlink on a range of a TEXT node: to another node in the same file (targetNodeId \u2014 a section, frame or page) or to a URL. The range is the first occurrence of match, or start/end, or the whole text. underline also underlines the range (color is left alone). remove:true clears the link on the range. Pass dryRun first to see which characters would be linked.",
+  {
+    nodeId: import_zod.z.string().describe("TEXT node id"),
+    match: import_zod.z.string().optional().describe("Substring to link (first occurrence)"),
+    start: import_zod.z.number().optional().describe("Range start (character index) when match is not given"),
+    end: import_zod.z.number().optional().describe("Range end (exclusive)"),
+    targetNodeId: import_zod.z.string().optional().describe("Node in this file to link to"),
+    url: import_zod.z.string().optional().describe("Or an external URL"),
+    underline: import_zod.z.boolean().optional().describe("Also underline the range"),
+    remove: import_zod.z.boolean().optional().describe("Clear the link on the range instead"),
+    dryRun: import_zod.z.boolean().optional().describe("Report the range without writing")
+  },
+  jsonToolHandler("set_hyperlink", "setting hyperlink")
+);
 async function main() {
   try {
     connectToFigma();

@@ -324,6 +324,8 @@ async function handleCommand(command, params) {
       return await applyTextStyles(params);
     case "create_text_styles":
       return await createTextStyles(params);
+    case "set_hyperlink":
+      return await setHyperlink(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -8323,6 +8325,54 @@ async function createTextStyles(params) {
     }
   }
   return { dryRun: dryRun, requested: items.length, done: results.length, results: results, errors: errors };
+}
+
+// E-33: TEXT 노드의 글자 범위에 링크를 건다. 범위 = match(처음 나오는 부분 문자열) 또는 start/end, 없으면 전체.
+// 대상 = targetNodeId(같은 파일 노드) 또는 url. remove:true 면 링크를 지운다.
+async function setHyperlink(params) {
+  params = params || {};
+  var node = await figma.getNodeByIdAsync(params.nodeId);
+  if (!node) throw new Error("Node not found: " + params.nodeId);
+  if (node.type !== "TEXT") throw new Error("Not a TEXT node: " + node.type);
+  var text = node.characters;
+  var start = 0, end = text.length;
+  if (typeof params.match === "string" && params.match.length) {
+    var at = text.indexOf(params.match);
+    if (at === -1) throw new Error("match not found in text: " + params.match);
+    start = at; end = at + params.match.length;
+  } else {
+    if (typeof params.start === "number") start = params.start;
+    if (typeof params.end === "number") end = params.end;
+  }
+  if (start < 0 || end > text.length || start >= end) throw new Error("Bad range " + start + "-" + end);
+
+  var link = null;
+  if (params.remove !== true) {
+    if (params.targetNodeId) {
+      var target = await figma.getNodeByIdAsync(params.targetNodeId);
+      if (!target) throw new Error("Target node not found: " + params.targetNodeId);
+      link = { type: "NODE", value: target.id };
+    } else if (params.url) {
+      link = { type: "URL", value: params.url };
+    } else {
+      throw new Error("Pass targetNodeId, url or remove:true");
+    }
+  }
+
+  var fonts = node.getRangeAllFontNames(start, end);
+  for (var i = 0; i < fonts.length; i++) await figma.loadFontAsync(fonts[i]);
+  if (params.dryRun !== true) {
+    node.setRangeHyperlink(start, end, link);
+    if (params.underline === true) node.setRangeTextDecoration(start, end, "UNDERLINE");
+  }
+  return {
+    dryRun: params.dryRun === true,
+    nodeId: node.id,
+    range: [start, end],
+    linkedText: text.slice(start, end),
+    hyperlink: link,
+    underline: params.underline === true,
+  };
 }
 
 async function renameVariables(params) {

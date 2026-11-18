@@ -3469,7 +3469,8 @@ type FigmaCommand =
   | "replace_variable_bindings"
   | "rename_variables"
   | "apply_text_styles"
-  | "create_text_styles";
+  | "create_text_styles"
+  | "set_hyperlink";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4668,6 +4669,23 @@ server.tool(
     dryRun: z.boolean().optional().describe("Report what would change without writing"),
   },
   jsonToolHandler("create_text_styles", "creating text styles")
+);
+
+server.tool(
+  "set_hyperlink",
+  "Put a hyperlink on a range of a TEXT node: to another node in the same file (targetNodeId — a section, frame or page) or to a URL. The range is the first occurrence of match, or start/end, or the whole text. underline also underlines the range (color is left alone). remove:true clears the link on the range. Pass dryRun first to see which characters would be linked.",
+  {
+    nodeId: z.string().describe("TEXT node id"),
+    match: z.string().optional().describe("Substring to link (first occurrence)"),
+    start: z.number().optional().describe("Range start (character index) when match is not given"),
+    end: z.number().optional().describe("Range end (exclusive)"),
+    targetNodeId: z.string().optional().describe("Node in this file to link to"),
+    url: z.string().optional().describe("Or an external URL"),
+    underline: z.boolean().optional().describe("Also underline the range"),
+    remove: z.boolean().optional().describe("Clear the link on the range instead"),
+    dryRun: z.boolean().optional().describe("Report the range without writing"),
+  },
+  jsonToolHandler("set_hyperlink", "setting hyperlink")
 );
 
 // Start the server
