@@ -3467,7 +3467,8 @@ type FigmaCommand =
   | "combine_as_variants"
   | "edit_component_property"
   | "replace_variable_bindings"
-  | "rename_variables";
+  | "rename_variables"
+  | "apply_text_styles";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4627,6 +4628,21 @@ server.tool(
     dryRun: z.boolean().optional().describe("Report what would change without writing"),
   },
   jsonToolHandler("rename_variables", "renaming variables")
+);
+
+server.tool(
+  "apply_text_styles",
+  "Attach local text styles to TEXT nodes that have none. A style matches when fontSize, fontName (family + style), lineHeight and letterSpacing are all equal, so the look does not change. Several styles with the same shape (e.g. Title2/Medium vs Body1/Medium) are reported under ambiguous unless prefer names the one to use. Nodes already styled or with mixed styles are skipped; nodes inside instances are skipped unless includeInstances (style the main component instead). noMatchShapes lists the size|family|style|lineHeight|letterSpacing combos no style covers. Scope with nodeIds, nodeId or pageName. Pass dryRun first.",
+  {
+    nodeIds: z.array(z.string()).optional().describe("Specific TEXT nodes"),
+    nodeId: z.string().optional().describe("Scan TEXT nodes under this node"),
+    pageName: z.string().optional().describe("Or scan a whole page by name"),
+    prefer: z.array(z.string()).optional().describe("Style names to pick, in order, when several styles match"),
+    includeInstances: z.boolean().optional().describe("Also style TEXT inside instances (creates overrides)"),
+    limit: z.number().optional().describe("Max listed nodes per list (default 200); counts are always complete"),
+    dryRun: z.boolean().optional().describe("Report what would change without writing"),
+  },
+  jsonToolHandler("apply_text_styles", "applying text styles")
 );
 
 // Start the server

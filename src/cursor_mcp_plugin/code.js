@@ -320,6 +320,8 @@ async function handleCommand(command, params) {
       return await replaceVariableBindings(params);
     case "rename_variables":
       return await renameVariables(params);
+    case "apply_text_styles":
+      return await applyTextStyles(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -7345,7 +7347,12 @@ async function bindVariable(params) {
           continue;
         }
         var next = fills.slice();
-        next[idx] = figma.variables.setBoundVariableForPaint(next[idx], "color", variable);
+        var boundPaint = figma.variables.setBoundVariableForPaint(next[idx], "color", variable);
+        // setBoundVariableForPaint 는 칠 투명도를 1 로 되돌린다 — 원래 값을 다시 넣는다.
+        if (typeof fills[idx].opacity === "number" && fills[idx].opacity !== 1) {
+          boundPaint = Object.assign({}, boundPaint, { opacity: fills[idx].opacity });
+        }
+        next[idx] = boundPaint;
         node.fills = next;
         bound.push({ nodeId: id, name: node.name, type: node.type });
       } else {
@@ -8086,6 +8093,133 @@ async function combineAsVariants(params) {
 // E-30: 로컬 변수 이름을 한꺼번에 바꾼다. 변수는 id 로 묶이므로 이름을 바꿔도 바인딩·alias 는 그대로다.
 // 대상은 variableId, 또는 collection(컬렉션 이름) + name(현재 이름)으로 집는다.
 // 같은 컬렉션 안에서 이름이 겹치면(바꾼 뒤 기준) 그 항목은 쓰지 않고 errors 로 돌려준다.
+// E-31: 텍스트 스타일이 없는 TEXT 노드에 같은 모양의 로컬 텍스트 스타일을 건다.
+// 매칭 = fontSize + fontName(family/style) + lineHeight + letterSpacing. 후보가 여럿이면 prefer 순서로 고르고, 못 고르면 ambiguous 로 보고.
+async function applyTextStyles(params) {
+  params = params || {};
+  var dryRun = params.dryRun === true;
+  var includeInstances = params.includeInstances === true;
+  var prefer = Array.isArray(params.prefer) ? params.prefer : [];
+  var limit = typeof params.limit === "number" ? params.limit : 200;
+
+  var styles = await figma.getLocalTextStylesAsync();
+  var byName = {};
+  styles.forEach(function (s) { byName[s.name] = s; });
+
+  function num(v) { return Math.round(v * 100) / 100; }
+  // % 와 px 가 섞여 저장되므로 px 로 환산해 비교한다.
+  function lhKey(lh, size) {
+    if (!lh || lh === figma.mixed) return "mixed";
+    if (lh.unit === "AUTO") return "AUTO";
+    var px = lh.unit === "PERCENT" ? lh.value * size / 100 : lh.value;
+    return num(px) + "px";
+  }
+  function lsKey(ls, size) {
+    if (!ls || ls === figma.mixed) return "mixed";
+    var px = ls.unit === "PERCENT" ? ls.value * size / 100 : ls.value;
+    return num(px) + "px";
+  }
+  function shapeKey(size, font, lh, ls) {
+    return num(size) + "|" + font.family + "|" + font.style + "|" + lhKey(lh, size) + "|" + lsKey(ls, size);
+  }
+  var byShape = {};
+  styles.forEach(function (s) {
+    var k = shapeKey(s.fontSize, s.fontName, s.lineHeight, s.letterSpacing);
+    (byShape[k] = byShape[k] || []).push(s);
+  });
+
+  // 대상 TEXT 노드 모으기
+  var targets = [];
+  if (Array.isArray(params.nodeIds) && params.nodeIds.length) {
+    for (var i = 0; i < params.nodeIds.length; i++) {
+      var n0 = await figma.getNodeByIdAsync(params.nodeIds[i]);
+      if (n0) targets.push(n0);
+    }
+  } else {
+    var root = null;
+    if (params.nodeId) {
+      root = await figma.getNodeByIdAsync(params.nodeId);
+      if (!root) throw new Error("Node not found: " + params.nodeId);
+    } else if (params.pageName) {
+      root = figma.root.children.find(function (p) { return p.name === params.pageName; });
+      if (!root) throw new Error("Page not found: " + params.pageName);
+      await root.loadAsync();
+    } else {
+      throw new Error("Pass nodeIds, nodeId or pageName");
+    }
+    targets = root.type === "TEXT" ? [root] : root.findAllWithCriteria({ types: ["TEXT"] });
+  }
+
+  function insideInstance(node) {
+    var p = node.parent;
+    while (p) {
+      if (p.type === "INSTANCE") return true;
+      p = p.parent;
+    }
+    return false;
+  }
+
+  var applied = [], ambiguous = [], noMatch = [], failed = [];
+  var skipped = { alreadyStyled: 0, mixed: 0, insideInstance: 0 };
+  var byStyle = {}, noMatchShapes = {};
+
+  for (var t = 0; t < targets.length; t++) {
+    var node = targets[t];
+    if (node.type !== "TEXT") continue;
+    if (node.textStyleId === figma.mixed) { skipped.mixed++; continue; }
+    if (node.textStyleId) { skipped.alreadyStyled++; continue; }
+    if (!includeInstances && insideInstance(node)) { skipped.insideInstance++; continue; }
+    if (node.fontSize === figma.mixed || node.fontName === figma.mixed) { skipped.mixed++; continue; }
+
+    var key = shapeKey(node.fontSize, node.fontName, node.lineHeight, node.letterSpacing);
+    var cands = byShape[key] || [];
+    var pick = null;
+    if (cands.length === 1) pick = cands[0];
+    else if (cands.length > 1) {
+      for (var p = 0; p < prefer.length && !pick; p++) {
+        pick = cands.find(function (c) { return c.name === prefer[p]; }) || null;
+      }
+      if (!pick) {
+        if (ambiguous.length < limit) ambiguous.push({ id: node.id, name: node.name, shape: key, candidates: cands.map(function (c) { return c.name; }) });
+        continue;
+      }
+    }
+    if (!pick) {
+      noMatchShapes[key] = (noMatchShapes[key] || 0) + 1;
+      if (noMatch.length < limit) noMatch.push({ id: node.id, name: node.name, shape: key, text: node.characters.slice(0, 30) });
+      continue;
+    }
+    byStyle[pick.name] = (byStyle[pick.name] || 0) + 1;
+    if (!dryRun) {
+      try {
+        await figma.loadFontAsync(pick.fontName);
+        await node.setTextStyleIdAsync(pick.id);
+      } catch (e) {
+        failed.push({ id: node.id, name: node.name, reason: e.message });
+        byStyle[pick.name]--;
+        continue;
+      }
+    }
+    if (applied.length < limit) applied.push({ id: node.id, name: node.name, style: pick.name });
+  }
+
+  var appliedCount = Object.keys(byStyle).reduce(function (a, k) { return a + byStyle[k]; }, 0);
+  return {
+    dryRun: dryRun,
+    scanned: targets.length,
+    applied: appliedCount,
+    byStyle: byStyle,
+    skipped: skipped,
+    ambiguousCount: ambiguous.length,
+    noMatchCount: Object.keys(noMatchShapes).reduce(function (a, k) { return a + noMatchShapes[k]; }, 0),
+    noMatchShapes: noMatchShapes,
+    failed: failed,
+    ambiguous: ambiguous,
+    noMatch: noMatch,
+    appliedSample: applied.slice(0, 30),
+  };
+}
+
 async function renameVariables(params) {
   var items = (params && params.items) || [];
   var dryRun = !!(params && params.dryRun);
