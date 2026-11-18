@@ -322,6 +322,8 @@ async function handleCommand(command, params) {
       return await renameVariables(params);
     case "apply_text_styles":
       return await applyTextStyles(params);
+    case "create_text_styles":
+      return await createTextStyles(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -8105,6 +8107,11 @@ async function applyTextStyles(params) {
   var styles = await figma.getLocalTextStylesAsync();
   var byName = {};
   styles.forEach(function (s) { byName[s.name] = s; });
+  var restyleIds = {};
+  var restyleFrom = Array.isArray(params.restyleFrom) ? params.restyleFrom : [];
+  styles.forEach(function (s) {
+    if (restyleFrom.some(function (r) { return r === "*" || s.name === r || s.name.indexOf(r) === 0; })) restyleIds[s.id] = true;
+  });
 
   function num(v) { return Math.round(v * 100) / 100; }
   // % 와 px 가 섞여 저장되므로 px 로 환산해 비교한다.
@@ -8167,7 +8174,11 @@ async function applyTextStyles(params) {
     var node = targets[t];
     if (node.type !== "TEXT") continue;
     if (node.textStyleId === figma.mixed) { skipped.mixed++; continue; }
-    if (node.textStyleId) { skipped.alreadyStyled++; continue; }
+    if (node.textStyleId) {
+      // restyleFrom: 이 스타일들에 묶인 노드는 다시 매칭한다(예: Body2/Bold → .Doc/Body2/Bold).
+      var cur = restyleIds[node.textStyleId];
+      if (!cur) { skipped.alreadyStyled++; continue; }
+    }
     if (!includeInstances && insideInstance(node)) { skipped.insideInstance++; continue; }
     if (node.fontSize === figma.mixed || node.fontName === figma.mixed) { skipped.mixed++; continue; }
 
@@ -8218,6 +8229,100 @@ async function applyTextStyles(params) {
     noMatch: noMatch,
     appliedSample: applied.slice(0, 30),
   };
+}
+
+// E-32: 로컬 텍스트 스타일 만들기. copyFrom 이면 기존 스타일의 값과 변수 바인딩을 복사한 뒤 항목 값으로 덮는다.
+// bind = { fontFamily|fontWeight|fontSize|lineHeight|letterSpacing|fontStyle: 변수 id 또는 variableCollection 안의 이름 }.
+async function createTextStyles(params) {
+  params = params || {};
+  var items = params.items;
+  var dryRun = params.dryRun === true;
+  var update = params.update === true;
+  if (!Array.isArray(items) || items.length === 0) throw new Error("Missing items");
+
+  var styles = await figma.getLocalTextStylesAsync();
+  var byName = {};
+  styles.forEach(function (s) { byName[s.name] = s; });
+
+  var collVars = {};
+  if (params.variableCollection) {
+    var colls = await figma.variables.getLocalVariableCollectionsAsync();
+    var coll = colls.find(function (c) { return c.name === params.variableCollection; });
+    if (!coll) throw new Error("Variable collection not found: " + params.variableCollection);
+    var all = await figma.variables.getLocalVariablesAsync();
+    all.forEach(function (v) { if (v.variableCollectionId === coll.id) collVars[v.name] = v; });
+  }
+  async function resolveVar(ref) {
+    if (/^VariableID:/.test(ref)) return await figma.variables.getVariableByIdAsync(ref);
+    return collVars[ref] || null;
+  }
+
+  var results = [], errors = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    try {
+      if (!it.name) throw new Error("item without name");
+      var existing = byName[it.name];
+      if (existing && !update) { errors.push({ name: it.name, reason: "already exists (pass update:true to change it)" }); continue; }
+      var src = null;
+      if (it.copyFrom) {
+        src = byName[it.copyFrom];
+        if (!src) throw new Error("copyFrom style not found: " + it.copyFrom);
+      }
+      var font = {
+        family: it.fontFamily || (src ? src.fontName.family : null),
+        style: it.fontStyle || (src ? src.fontName.style : null),
+      };
+      if (!font.family || !font.style) throw new Error("fontFamily/fontStyle required (or copyFrom)");
+      var size = typeof it.fontSize === "number" ? it.fontSize : (src ? src.fontSize : null);
+      if (!size) throw new Error("fontSize required (or copyFrom)");
+      var lh = it.lineHeight === "AUTO" ? { unit: "AUTO" }
+        : typeof it.lineHeight === "number" ? { unit: "PIXELS", value: it.lineHeight }
+        : (src ? src.lineHeight : { unit: "AUTO" });
+      var ls = typeof it.letterSpacingPercent === "number" ? { unit: "PERCENT", value: it.letterSpacingPercent }
+        : typeof it.letterSpacing === "number" ? { unit: "PIXELS", value: it.letterSpacing }
+        : (src ? src.letterSpacing : { unit: "PIXELS", value: 0 });
+
+      // 바인딩 목록: copyFrom 의 것 + 항목 bind
+      var binds = {};
+      if (src && src.boundVariables) {
+        Object.keys(src.boundVariables).forEach(function (f) {
+          var a = src.boundVariables[f];
+          if (a && a.id) binds[f] = a.id;
+        });
+      }
+      if (it.bind) Object.keys(it.bind).forEach(function (f) { binds[f] = it.bind[f]; });
+      var resolved = {}, unresolved = [];
+      for (var f in binds) {
+        var v = await resolveVar(binds[f]);
+        if (v) resolved[f] = v; else unresolved.push(f + "=" + binds[f]);
+      }
+
+      var out = {
+        name: it.name, action: existing ? "update" : "create", copyFrom: it.copyFrom || null,
+        fontName: font, fontSize: size, lineHeight: lh, letterSpacing: ls,
+        bound: Object.keys(resolved).reduce(function (o, k) { o[k] = resolved[k].name; return o; }, {}),
+        unresolved: unresolved,
+      };
+      if (!dryRun) {
+        await figma.loadFontAsync(font);
+        var s = existing || figma.createTextStyle();
+        s.name = it.name;
+        s.fontName = font;
+        s.fontSize = size;
+        s.lineHeight = lh;
+        s.letterSpacing = ls;
+        if (typeof it.description === "string") s.description = it.description;
+        for (var k in resolved) s.setBoundVariable(k, resolved[k]);
+        out.id = s.id;
+        out.key = s.key;
+      }
+      results.push(out);
+    } catch (e) {
+      errors.push({ name: it && it.name, reason: e.message });
+    }
+  }
+  return { dryRun: dryRun, requested: items.length, done: results.length, results: results, errors: errors };
 }
 
 async function renameVariables(params) {

@@ -3468,7 +3468,8 @@ type FigmaCommand =
   | "edit_component_property"
   | "replace_variable_bindings"
   | "rename_variables"
-  | "apply_text_styles";
+  | "apply_text_styles"
+  | "create_text_styles";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4638,11 +4639,35 @@ server.tool(
     nodeId: z.string().optional().describe("Scan TEXT nodes under this node"),
     pageName: z.string().optional().describe("Or scan a whole page by name"),
     prefer: z.array(z.string()).optional().describe("Style names to pick, in order, when several styles match"),
+    restyleFrom: z.array(z.string()).optional().describe("Also re-match nodes already using these styles (exact name or name prefix, \"*\" = any), e.g. move Body2/Bold text to .Doc/Body2/Bold with prefer"),
     includeInstances: z.boolean().optional().describe("Also style TEXT inside instances (creates overrides)"),
     limit: z.number().optional().describe("Max listed nodes per list (default 200); counts are always complete"),
     dryRun: z.boolean().optional().describe("Report what would change without writing"),
   },
   jsonToolHandler("apply_text_styles", "applying text styles")
+);
+
+server.tool(
+  "create_text_styles",
+  "Create local text styles. copyFrom copies an existing style's font, size, line height, letter spacing and its variable bindings; any field given on the item overrides it. bind attaches variables to style fields (fontFamily, fontStyle, fontWeight, fontSize, lineHeight, letterSpacing) by variable id or by name inside variableCollection (e.g. TY/PRI → \"Size/300\"). Names starting with . or _ are not published with the library. An existing name is reported under errors unless update. Pass dryRun first.",
+  {
+    items: z.array(z.object({
+      name: z.string().describe("Full style name, e.g. .Doc/Title1/Bold"),
+      copyFrom: z.string().optional().describe("Existing style name to copy values and bindings from"),
+      fontFamily: z.string().optional(),
+      fontStyle: z.string().optional().describe("e.g. Bold, SemiBold"),
+      fontSize: z.number().optional(),
+      lineHeight: z.union([z.number(), z.literal("AUTO")]).optional().describe("px or AUTO"),
+      letterSpacing: z.number().optional().describe("px"),
+      letterSpacingPercent: z.number().optional().describe("% of font size"),
+      bind: z.record(z.string()).optional().describe("style field → variable id or name in variableCollection"),
+      description: z.string().optional(),
+    })).min(1),
+    variableCollection: z.string().optional().describe("Collection to resolve bind names in, e.g. TY/PRI"),
+    update: z.boolean().optional().describe("Change a style that already exists instead of reporting it"),
+    dryRun: z.boolean().optional().describe("Report what would change without writing"),
+  },
+  jsonToolHandler("create_text_styles", "creating text styles")
 );
 
 // Start the server
