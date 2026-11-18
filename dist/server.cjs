@@ -3653,6 +3653,23 @@ server.tool(
   },
   jsonToolHandler("set_hyperlink", "setting hyperlink")
 );
+server.tool(
+  "create_variables",
+  "Create local variables. copyFrom (a variable in the same collection) copies its type, scopes and every mode value \u2014 including an alias that carries opacity, like State/Pressed/Background \u2014 and values then overrides modes by mode name: { hex } | { alias, aliasCollection?, opacity? } | number | string | boolean. An existing name is reported under errors. Pass dryRun first.",
+  {
+    items: import_zod.z.array(import_zod.z.object({
+      collection: import_zod.z.string().describe("Collection name, e.g. CL/SEM"),
+      name: import_zod.z.string().describe("Full variable name, e.g. State/Pressed/On-Primary"),
+      type: import_zod.z.enum(["COLOR", "FLOAT", "STRING", "BOOLEAN"]).optional().describe("Required unless copyFrom"),
+      copyFrom: import_zod.z.string().optional().describe("Variable name in the same collection to copy from"),
+      values: import_zod.z.record(import_zod.z.any()).optional().describe("Mode name \u2192 value spec"),
+      scopes: import_zod.z.array(import_zod.z.string()).optional(),
+      description: import_zod.z.string().optional()
+    })).min(1),
+    dryRun: import_zod.z.boolean().optional().describe("Report what would change without writing")
+  },
+  jsonToolHandler("create_variables", "creating variables")
+);
 async function main() {
   try {
     connectToFigma();

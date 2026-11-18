@@ -3631,6 +3631,23 @@ server.tool(
   },
   jsonToolHandler("set_hyperlink", "setting hyperlink")
 );
+server.tool(
+  "create_variables",
+  "Create local variables. copyFrom (a variable in the same collection) copies its type, scopes and every mode value \u2014 including an alias that carries opacity, like State/Pressed/Background \u2014 and values then overrides modes by mode name: { hex } | { alias, aliasCollection?, opacity? } | number | string | boolean. An existing name is reported under errors. Pass dryRun first.",
+  {
+    items: z.array(z.object({
+      collection: z.string().describe("Collection name, e.g. CL/SEM"),
+      name: z.string().describe("Full variable name, e.g. State/Pressed/On-Primary"),
+      type: z.enum(["COLOR", "FLOAT", "STRING", "BOOLEAN"]).optional().describe("Required unless copyFrom"),
+      copyFrom: z.string().optional().describe("Variable name in the same collection to copy from"),
+      values: z.record(z.any()).optional().describe("Mode name \u2192 value spec"),
+      scopes: z.array(z.string()).optional(),
+      description: z.string().optional()
+    })).min(1),
+    dryRun: z.boolean().optional().describe("Report what would change without writing")
+  },
+  jsonToolHandler("create_variables", "creating variables")
+);
 async function main() {
   try {
     connectToFigma();

@@ -326,6 +326,8 @@ async function handleCommand(command, params) {
       return await createTextStyles(params);
     case "set_hyperlink":
       return await setHyperlink(params);
+    case "create_variables":
+      return await createVariables(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -8373,6 +8375,82 @@ async function setHyperlink(params) {
     hyperlink: link,
     underline: params.underline === true,
   };
+}
+
+// E-34: 로컬 변수 만들기. copyFrom(같은 컬렉션 변수)이면 타입·scope·모드별 값을 그대로 복사한 뒤 values 로 모드별로 덮는다.
+// values[모드이름] = { hex } | { alias: "이름", aliasCollection?, opacity? } | 숫자 | 문자열 | 불리언.
+async function createVariables(params) {
+  params = params || {};
+  var items = params.items;
+  var dryRun = params.dryRun === true;
+  if (!Array.isArray(items) || items.length === 0) throw new Error("Missing items");
+
+  var colls = await figma.variables.getLocalVariableCollectionsAsync();
+  var all = await figma.variables.getLocalVariablesAsync();
+  function collByName(n) { return colls.find(function (c) { return c.name === n; }); }
+  function varIn(collName, name) {
+    var c = collByName(collName);
+    if (!c) return null;
+    return all.find(function (v) { return v.variableCollectionId === c.id && v.name === name; }) || null;
+  }
+  function hexToRgba(h) {
+    h = h.replace("#", "");
+    var a = h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
+    return { r: parseInt(h.slice(0, 2), 16) / 255, g: parseInt(h.slice(2, 4), 16) / 255, b: parseInt(h.slice(4, 6), 16) / 255, a: a };
+  }
+
+  var results = [], errors = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    try {
+      var coll = collByName(it.collection);
+      if (!coll) throw new Error("Collection not found: " + it.collection);
+      if (varIn(it.collection, it.name)) throw new Error("Already exists: " + it.collection + " / " + it.name);
+      var src = it.copyFrom ? varIn(it.collection, it.copyFrom) : null;
+      if (it.copyFrom && !src) throw new Error("copyFrom not found: " + it.copyFrom);
+      var type = it.type || (src ? src.resolvedType : null);
+      if (!type) throw new Error("type required (COLOR | FLOAT | STRING | BOOLEAN) or copyFrom");
+
+      // 모드별 값 계산
+      var planned = {};
+      for (var m = 0; m < coll.modes.length; m++) {
+        var mode = coll.modes[m];
+        var val = src ? src.valuesByMode[mode.modeId] : undefined;
+        var spec = it.values ? it.values[mode.name] : undefined;
+        if (spec !== undefined) {
+          if (spec && typeof spec === "object" && spec.alias) {
+            var target = varIn(spec.aliasCollection || it.collection, spec.alias);
+            if (!target) throw new Error("alias not found: " + (spec.aliasCollection || it.collection) + " / " + spec.alias);
+            var aliasVal = figma.variables.createVariableAlias(target);
+            val = typeof spec.opacity === "number" ? { color: aliasVal, opacity: spec.opacity } : aliasVal;
+          } else if (spec && typeof spec === "object" && spec.hex) {
+            val = hexToRgba(spec.hex);
+          } else {
+            val = spec;
+          }
+        }
+        if (val === undefined) throw new Error("No value for mode " + mode.name);
+        planned[mode.name] = { modeId: mode.modeId, value: val };
+      }
+
+      var out = { collection: it.collection, name: it.name, type: type, copyFrom: it.copyFrom || null,
+        values: Object.keys(planned).reduce(function (o, k) { o[k] = planned[k].value; return o; }, {}) };
+      if (!dryRun) {
+        var v = figma.variables.createVariable(it.name, coll, type);
+        if (src) v.scopes = src.scopes.slice();
+        if (Array.isArray(it.scopes)) v.scopes = it.scopes;
+        if (typeof it.description === "string") v.description = it.description;
+        for (var k in planned) v.setValueForMode(planned[k].modeId, planned[k].value);
+        out.id = v.id;
+        out.key = v.key;
+        all.push(v);
+      }
+      results.push(out);
+    } catch (e) {
+      errors.push({ name: it && it.name, reason: e.message });
+    }
+  }
+  return { dryRun: dryRun, requested: items.length, done: results.length, results: results, errors: errors };
 }
 
 async function renameVariables(params) {

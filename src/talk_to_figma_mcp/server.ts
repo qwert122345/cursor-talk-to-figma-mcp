@@ -3470,7 +3470,8 @@ type FigmaCommand =
   | "rename_variables"
   | "apply_text_styles"
   | "create_text_styles"
-  | "set_hyperlink";
+  | "set_hyperlink"
+  | "create_variables";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -4686,6 +4687,24 @@ server.tool(
     dryRun: z.boolean().optional().describe("Report the range without writing"),
   },
   jsonToolHandler("set_hyperlink", "setting hyperlink")
+);
+
+server.tool(
+  "create_variables",
+  "Create local variables. copyFrom (a variable in the same collection) copies its type, scopes and every mode value — including an alias that carries opacity, like State/Pressed/Background — and values then overrides modes by mode name: { hex } | { alias, aliasCollection?, opacity? } | number | string | boolean. An existing name is reported under errors. Pass dryRun first.",
+  {
+    items: z.array(z.object({
+      collection: z.string().describe("Collection name, e.g. CL/SEM"),
+      name: z.string().describe("Full variable name, e.g. State/Pressed/On-Primary"),
+      type: z.enum(["COLOR", "FLOAT", "STRING", "BOOLEAN"]).optional().describe("Required unless copyFrom"),
+      copyFrom: z.string().optional().describe("Variable name in the same collection to copy from"),
+      values: z.record(z.any()).optional().describe("Mode name → value spec"),
+      scopes: z.array(z.string()).optional(),
+      description: z.string().optional(),
+    })).min(1),
+    dryRun: z.boolean().optional().describe("Report what would change without writing"),
+  },
+  jsonToolHandler("create_variables", "creating variables")
 );
 
 // Start the server
