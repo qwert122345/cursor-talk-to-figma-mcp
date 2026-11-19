@@ -1538,6 +1538,26 @@ server.tool(
   }
 );
 
+// Find Variable Usage Tool (read-only)
+server.tool(
+  "find_variable_usage",
+  "Read-only. List main components (COMPONENT, grouped by COMPONENT_SET) whose own layers bind the given variables: fills, strokes, effects, text ranges, numeric fields, and paint styles bound to the variable (source 'style:<name>'). Nested instances are skipped entirely (the instance node itself, its layers and overrides). Scope by a contiguous page range in document order with fromPage/toPage.",
+  {
+    variableNames: z.array(z.string()).optional().describe("Local variable names, e.g. RD/SYS/primary"),
+    variableIds: z.array(z.string()).optional().describe("Variable ids (VariableID:...)"),
+    fromPage: z.string().optional().describe("First page name of the range (inclusive)"),
+    toPage: z.string().optional().describe("Last page name of the range (inclusive)"),
+  },
+  async (params: any) => {
+    try {
+      const result = await sendCommandToFigma("find_variable_usage", params, 600000);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error finding variable usage: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  }
+);
+
 // DS healthcheck: Instance Census Tool
 server.tool(
   "get_instance_census",
@@ -3411,6 +3431,7 @@ type FigmaCommand =
   | "get_local_variables"
   | "get_variable_bindings"
   | "get_instance_census"
+  | "find_variable_usage"
   | "get_layout_audit"
   | "find_hidden_nodes"
   | "find_nodes_by_name"

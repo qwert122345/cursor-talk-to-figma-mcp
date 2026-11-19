@@ -152,6 +152,8 @@ async function handleCommand(command, params) {
       return await getLocalVariables();
     case "get_variable_bindings":
       return await getVariableBindings(params);
+    case "find_variable_usage":
+      return await findVariableUsage(params);
     case "get_instance_census":
       return await getInstanceCensus(params);
     case "get_layout_audit":
@@ -8560,5 +8562,189 @@ async function renameVariables(params) {
     results: results,
     unchangedItems: unchanged,
     errors: errors,
+  };
+}
+
+// ── find_variable_usage (read-only) ─────────────────────────────────────────
+// Lists main components (COMPONENT / COMPONENT_SET) whose own layers bind the
+// given variables directly. Nested instances (the instance node itself, its
+// layers and overrides) are skipped entirely. Paint styles bound to the variable are
+// reported with source "style:<name>".
+async function findVariableUsage(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  var wantNames = params.variableNames || [];
+  var wantIds = (params.variableIds || []).slice();
+
+  var locals = await figma.variables.getLocalVariablesAsync();
+  var idToName = {};
+  locals.forEach(function (v) {
+    if (wantNames.indexOf(v.name) !== -1 && wantIds.indexOf(v.id) === -1) wantIds.push(v.id);
+  });
+  for (var wi = 0; wi < wantIds.length; wi++) {
+    var vv = await figma.variables.getVariableByIdAsync(wantIds[wi]);
+    idToName[wantIds[wi]] = vv ? vv.name : wantIds[wi];
+  }
+  if (!wantIds.length) throw new Error("No variables matched " + JSON.stringify(wantNames));
+
+  var pages = figma.root.children;
+  var pageNames = pages.map(function (p) { return p.name; });
+  function findPage(name) {
+    if (!name) return -1;
+    var i = pageNames.indexOf(name);
+    if (i !== -1) return i;
+    var t = name.trim();
+    for (var k = 0; k < pageNames.length; k++) if (pageNames[k].trim() === t) return k;
+    return -1;
+  }
+  var from = params.fromPage ? findPage(params.fromPage) : 0;
+  var to = params.toPage ? findPage(params.toPage) : pages.length - 1;
+  if (from === -1 || to === -1 || from > to) {
+    return { error: "page range not found", fromIndex: from, toIndex: to, pages: pageNames };
+  }
+  var scanned = pages.slice(from, to + 1);
+
+  var styleCache = {};
+  async function styleHits(styleId) {
+    if (!styleId || typeof styleId !== "string") return [];
+    if (styleCache[styleId]) return styleCache[styleId];
+    var out = [];
+    try {
+      var st = await figma.getStyleByIdAsync(styleId);
+      if (st && st.paints) st.paints.forEach(function (p) {
+        var a = p.boundVariables && p.boundVariables.color;
+        if (a && idToName[a.id]) out.push({ id: a.id, style: st.name });
+      });
+    } catch (e) {}
+    styleCache[styleId] = out;
+    return out;
+  }
+
+  function aliasIds(val, out) {
+    if (!val) return;
+    if (Array.isArray(val)) { val.forEach(function (x) { aliasIds(x, out); }); return; }
+    if (val.type === "VARIABLE_ALIAS" && val.id) out.push(val.id);
+  }
+
+  // Returns [{varId, field, source}] for one node; onlyFields limits to overridden fields.
+  async function nodeHits(node, onlyFields) {
+    var hits = [];
+    var seen = {};
+    function add(id, field, source) {
+      if (!idToName[id]) return;
+      var key = id + "|" + field + "|" + source;
+      if (seen[key]) return;
+      seen[key] = 1;
+      hits.push({ varId: id, field: field, source: source });
+    }
+    function ok(f) { return !onlyFields || onlyFields.indexOf(f) !== -1; }
+    var bv = node.boundVariables || {};
+    Object.keys(bv).forEach(function (k) {
+      var fieldBase = k === "textRangeFills" ? "fills" : k;
+      if (!ok(fieldBase) && !ok(k)) return;
+      var ids = []; aliasIds(bv[k], ids);
+      ids.forEach(function (id) { add(id, k, "direct"); });
+    });
+    ["fills", "strokes"].forEach(function (f) {
+      if (!ok(f)) return;
+      var paints = node[f];
+      if (!paints || paints === figma.mixed || !Array.isArray(paints)) return;
+      paints.forEach(function (p) {
+        var a = p.boundVariables && p.boundVariables.color;
+        if (a) add(a.id, f, "direct");
+        (p.gradientStops || []).forEach(function (gs) {
+          var g = gs.boundVariables && gs.boundVariables.color;
+          if (g) add(g.id, f + ".gradient", "direct");
+        });
+      });
+    });
+    if (ok("effects") && Array.isArray(node.effects)) {
+      node.effects.forEach(function (ef) {
+        var a = ef.boundVariables && ef.boundVariables.color;
+        if (a) add(a.id, "effects", "direct");
+      });
+    }
+    if (node.type === "TEXT" && ok("fills") && (node.fills === figma.mixed || node.fillStyleId === figma.mixed)) {
+      try {
+        var segs = node.getStyledTextSegments(["fills", "fillStyleId"]);
+        for (var s = 0; s < segs.length; s++) {
+          (segs[s].fills || []).forEach(function (p) {
+            var a = p.boundVariables && p.boundVariables.color;
+            if (a) add(a.id, "textRangeFills", "direct");
+          });
+          var sh = await styleHits(segs[s].fillStyleId);
+          sh.forEach(function (h) { add(h.id, "textRangeFills", "style:" + h.style); });
+        }
+      } catch (e) {}
+    }
+    if (ok("fills") && typeof node.fillStyleId === "string") {
+      (await styleHits(node.fillStyleId)).forEach(function (h) { add(h.id, "fills", "style:" + h.style); });
+    }
+    if (ok("strokes") && typeof node.strokeStyleId === "string") {
+      (await styleHits(node.strokeStyleId)).forEach(function (h) { add(h.id, "strokes", "style:" + h.style); });
+    }
+    return hits;
+  }
+
+  var results = [];
+  var unitCount = 0;
+
+  async function scanComponent(comp, page, set) {
+    unitCount++;
+    var rec = {
+      page: page.name,
+      setId: set ? set.id : null,
+      setName: set ? set.name : null,
+      componentId: comp.id,
+      componentName: comp.name,
+      hits: [],
+    };
+    async function record(node, hs, source) {
+      hs.forEach(function (h) {
+        rec.hits.push({
+          variable: idToName[h.varId],
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeType: node.type,
+          field: h.field,
+          source: source === "override" && h.source === "direct" ? "override" : (source === "override" ? "override+" + h.source : h.source),
+        });
+      });
+    }
+    async function walk(node) {
+      // nested instance (node + its layers + overrides) belongs to another main component: skip entirely
+      if (node.type === "INSTANCE" && node !== comp) return;
+      await record(node, await nodeHits(node, null), "direct");
+      if ("children" in node) {
+        for (var c = 0; c < node.children.length; c++) {
+          var ch = node.children[c];
+          if (ch.type === "COMPONENT" || ch.type === "COMPONENT_SET") continue; // own unit
+          await walk(ch);
+        }
+      }
+    }
+    await walk(comp);
+    if (rec.hits.length) results.push(rec);
+  }
+
+  for (var pi = 0; pi < scanned.length; pi++) {
+    var page = scanned[pi];
+    await page.loadAsync();
+    await sendProgressUpdate(commandId, "find_variable_usage", "in_progress",
+      Math.round((pi / scanned.length) * 100), scanned.length, pi, "Scanning page " + page.name);
+    var comps = page.findAllWithCriteria({ types: ["COMPONENT"] });
+    for (var ci = 0; ci < comps.length; ci++) {
+      var comp = comps[ci];
+      var set = comp.parent && comp.parent.type === "COMPONENT_SET" ? comp.parent : null;
+      await scanComponent(comp, page, set);
+    }
+  }
+
+  return {
+    variables: idToName,
+    scannedPages: scanned.map(function (p) { return p.name; }),
+    componentsScanned: unitCount,
+    componentsWithHits: results.length,
+    results: results,
   };
 }
