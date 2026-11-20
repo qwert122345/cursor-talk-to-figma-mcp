@@ -3246,7 +3246,7 @@ server.tool(
 );
 server.tool(
   "reset_instance_overrides",
-  "Reset all overrides on the top-level instances under the given nodes (an INSTANCE itself, or every instance not nested in another instance inside a COMPONENT/FRAME), then restore what they showed before: the top-level instance's absolute positioning, constraints, auto-layout sizing, size and position (applied after all resets) plus sublayer sizing and fixed sizes, swapped components, component properties (variant/boolean/text/instance-swap), visibility and text content. Other overrides (fills, sizes, stale ones) revert to the main component. Run dryRun first to see which instances are hit.",
+  "Reset all overrides on the top-level instances under the given nodes (an INSTANCE itself, or every instance not nested in another instance inside a COMPONENT/FRAME), then restore what they showed before: the top-level instance's absolute positioning, constraints, auto-layout sizing, size and position (applied after all resets) plus sublayer sizing and fixed sizes, swapped components, component properties (variant/boolean/text/instance-swap), visibility and text content. Other overrides (fills, sizes, stale ones) revert to the main component. Color tokens (variables bound to fills/strokes) are NOT restored, because whether to keep them differs per component: each result lists droppedColorTokens (layer id, field, paint index, was/now variable name) so they can be reviewed and re-bound with bind_variable overwrite:true. Run dryRun first to see which instances are hit.",
   {
     nodeIds: import_zod.z.array(import_zod.z.string()).describe("INSTANCE ids, or containers (COMPONENT/FRAME) whose top-level instances should be reset"),
     dryRun: import_zod.z.boolean().optional().describe("List the instances that would be reset without changing anything")
@@ -3548,6 +3548,25 @@ server.tool(
     nested: import_zod.z.boolean().optional().describe("Also read instances nested inside instances (default true)")
   },
   jsonToolHandler("get_instance_properties", "getting instance properties")
+);
+server.tool(
+  "get_variable_modes",
+  "Diagnose variable modes (e.g. a resolution collection with 9-inch/11-inch modes) on a frame: its resolved and explicit modes, plus for the node and each direct child the position/size, constraints, positioning, auto-layout sizing, and variables bound to its fields and component properties (with the resolved value). Use it to see what follows a mode switch and what stays fixed.",
+  {
+    nodeId: import_zod.z.string().describe("Frame/section/instance to inspect"),
+    children: import_zod.z.boolean().optional().describe("Also describe direct children (default true)")
+  },
+  jsonToolHandler("get_variable_modes", "getting variable modes")
+);
+server.tool(
+  "set_variable_mode",
+  "Switch the variable mode a node uses for one collection, like picking a mode in the right panel (setExplicitVariableModeForCollection). collection and mode are names; the collection is looked up among those applied to the node, then local collections. Returns before/after mode.",
+  {
+    nodeId: import_zod.z.string().describe("Frame/section/instance to switch"),
+    collection: import_zod.z.string().describe("Variable collection name"),
+    mode: import_zod.z.string().describe("Mode name, e.g. 11-inch")
+  },
+  jsonToolHandler("set_variable_mode", "setting variable mode")
 );
 server.tool(
   "set_instance_properties",

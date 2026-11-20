@@ -310,6 +310,10 @@ async function handleCommand(command, params) {
       return await setVisible(params);
     case "get_instance_properties":
       return await getInstanceProperties(params);
+    case "get_variable_modes":
+      return await getVariableModes(params);
+    case "set_variable_mode":
+      return await setVariableMode(params);
     case "set_instance_properties":
       return await setInstanceProperties(params);
     case "clear_fills":
@@ -1833,6 +1837,18 @@ function restoreSize(node, g) {
   return changed;
 }
 
+// fills/strokes 각 paint 에 걸린 색 변수 id (없으면 null). 걸린 게 하나도 없으면 null.
+function paintTokenIds(node) {
+  let out = null;
+  for (const field of ["fills", "strokes"]) {
+    const paints = node[field];
+    if (!Array.isArray(paints)) continue;
+    const ids = paints.map((p) => (p.boundVariables && p.boundVariables.color ? p.boundVariables.color.id : null));
+    if (ids.some(Boolean)) (out = out || {})[field] = ids;
+  }
+  return out;
+}
+
 // Reset all overrides on the top-level instances under each node, then
 // re-apply what they showed before: swapped components, component
 // properties, visibility and text. Everything else (fills, sizes, stale
@@ -1864,6 +1880,9 @@ async function resetInstanceOverrides(params) {
     const walk = async (node) => {
       const entry = { id: node.id, name: node.name, visible: node.visible };
       if (node.type === "TEXT") entry.characters = node.characters;
+      // 색 토큰: 복원 여부가 컴포넌트마다 달라 되돌리지 않고, reset 이 지운 것을 보고만 한다.
+      const paintTokens = paintTokenIds(node);
+      if (paintTokens) entry.paintTokens = paintTokens;
       // Sublayer size overrides (e.g. a list clipped to a fixed height) are
       // dropped by resetOverrides too. Text sizes follow their content.
       if (node !== root && node.type !== "TEXT" && "resize" in node) {
@@ -1970,6 +1989,22 @@ async function resetInstanceOverrides(params) {
         }
         if (entry.size && restoreSize(node, entry.size)) changed = true;
         if (changed) result.restored++;
+        if (entry.paintTokens) {
+          const now = paintTokenIds(node) || {};
+          for (const [field, ids] of Object.entries(entry.paintTokens)) {
+            for (let p = 0; p < ids.length; p++) {
+              if (!ids[p] || (now[field] && now[field][p] === ids[p])) continue;
+              const was = await figma.variables.getVariableByIdAsync(ids[p]);
+              const nowId = now[field] && now[field][p];
+              const cur = nowId ? await figma.variables.getVariableByIdAsync(nowId) : null;
+              result.droppedColorTokens = result.droppedColorTokens || [];
+              result.droppedColorTokens.push({
+                id: entry.id, name: entry.name, field, index: p,
+                was: was ? was.name : ids[p], now: cur ? cur.name : nowId || null,
+              });
+            }
+          }
+        }
       } catch (error) {
         result.failed.push({ id: entry.id, name: entry.name, reason: error.message });
       }
@@ -7792,6 +7827,87 @@ async function getInstanceProperties(params) {
   };
   for (const node of nodes) await walk(node, 0);
   return { count: out.length, instances: out };
+}
+
+// 변수 모드(예: resolution 9-inch/11-inch) 진단. 노드와 직속 자식의 적용 모드, 크기/위치 필드에 걸린
+// 토큰, 속성 토큰, constraints/positioning 을 읽는다. 모드를 바꿨을 때 무엇이 따라오고 무엇이 안 따라오는지 보는 용도.
+async function describeModes(modes) {
+  const out = {};
+  for (const [collId, modeId] of Object.entries(modes || {})) {
+    const coll = await figma.variables.getVariableCollectionByIdAsync(collId);
+    const mode = coll && coll.modes.find((m) => m.modeId === modeId);
+    out[coll ? coll.name : collId] = mode ? mode.name : modeId;
+  }
+  return out;
+}
+
+async function describeLayoutNode(node) {
+  const info = {
+    id: node.id, name: node.name, type: node.type,
+    x: node.x, y: node.y, width: node.width, height: node.height,
+  };
+  if ("constraints" in node) info.constraints = node.constraints;
+  if ("layoutPositioning" in node && node.layoutPositioning !== "AUTO") info.layoutPositioning = node.layoutPositioning;
+  if ("layoutMode" in node && node.layoutMode !== "NONE") info.layoutMode = node.layoutMode;
+  if ("layoutSizingHorizontal" in node) info.sizing = [node.layoutSizingHorizontal, node.layoutSizingVertical];
+  const bound = {};
+  for (const [field, a] of Object.entries(node.boundVariables || {})) {
+    if (!a || Array.isArray(a) || !a.id) continue;
+    const v = await figma.variables.getVariableByIdAsync(a.id);
+    bound[field] = v ? v.name : a.id;
+  }
+  if (node.type === "INSTANCE") {
+    for (const [key, p] of Object.entries(node.componentProperties)) {
+      const a = p.boundVariables && p.boundVariables.value;
+      if (!a) continue;
+      const v = await figma.variables.getVariableByIdAsync(a.id);
+      bound["prop:" + bareProp(key)] = (v ? v.name : a.id) + " → " + p.value;
+    }
+  }
+  if (Object.keys(bound).length) info.tokens = bound;
+  const explicit = await describeModes(node.explicitVariableModes);
+  if (Object.keys(explicit).length) info.explicitModes = explicit;
+  return info;
+}
+
+async function getVariableModes(params) {
+  const { nodeId, children = true } = params || {};
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  const out = await describeLayoutNode(node);
+  out.resolvedModes = await describeModes(node.resolvedVariableModes);
+  if (children && "children" in node) {
+    out.children = [];
+    for (const c of node.children) out.children.push(await describeLayoutNode(c));
+  }
+  return out;
+}
+
+// 노드의 변수 모드를 바꾼다 (오른쪽 패널의 모드 선택과 같음). collection/mode 는 이름.
+// 컬렉션은 노드에 적용 중인 것(resolvedVariableModes) → 로컬 컬렉션 순으로 찾는다.
+async function setVariableMode(params) {
+  const { nodeId, collection, mode } = params || {};
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (typeof node.setExplicitVariableModeForCollection !== "function") {
+    throw new Error(`Node type ${node.type} cannot have variable modes`);
+  }
+  let coll = null;
+  for (const collId of Object.keys(node.resolvedVariableModes || {})) {
+    const c = await figma.variables.getVariableCollectionByIdAsync(collId);
+    if (c && c.name === collection) { coll = c; break; }
+  }
+  if (!coll) {
+    const locals = await figma.variables.getLocalVariableCollectionsAsync();
+    coll = locals.find((c) => c.name === collection) || null;
+  }
+  if (!coll) throw new Error(`Collection "${collection}" not found on node or locally`);
+  const m = coll.modes.find((x) => x.name === mode);
+  if (!m) throw new Error(`Mode "${mode}" not in "${coll.name}" (has: ${coll.modes.map((x) => x.name).join(", ")})`);
+  const before = await describeModes(node.resolvedVariableModes);
+  node.setExplicitVariableModeForCollection(coll, m.modeId);
+  const after = await describeModes(node.resolvedVariableModes);
+  return { id: node.id, name: node.name, collection: coll.name, before: before[coll.name], after: after[coll.name] };
 }
 
 // { variableId } | { variableKey } | { variableName } 를 Variable 로 바꾼다.
