@@ -3185,14 +3185,17 @@ server.tool(
 );
 server.tool(
   "set_constraints",
-  "Set a node's resize constraints (horizontal/vertical: MIN | CENTER | MAX | STRETCH | SCALE) and/or a frame's clipsContent. Constraints only take effect when the parent is not auto layout, or the child is absolutely positioned. Each item is reported independently with its before/after values; dryRun returns before only.",
+  "Set a node's resize constraints (horizontal/vertical: MIN | CENTER | MAX | STRETCH | SCALE) and/or a frame's clipsContent, and/or its absolute positioning (positioning ABSOLUTE/AUTO) and x/y. Constraints only take effect when the parent is not auto layout, or the child is absolutely positioned. Each item is reported independently with its before/after values; dryRun returns before only.",
   {
     items: import_zod.z.array(
       import_zod.z.object({
         nodeId: import_zod.z.string(),
         horizontal: import_zod.z.enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"]).optional(),
         vertical: import_zod.z.enum(["MIN", "CENTER", "MAX", "STRETCH", "SCALE"]).optional(),
-        clipsContent: import_zod.z.boolean().optional().describe("Frames only")
+        clipsContent: import_zod.z.boolean().optional().describe("Frames only"),
+        positioning: import_zod.z.enum(["ABSOLUTE", "AUTO"]).optional().describe("Take the node out of (ABSOLUTE) or back into (AUTO) its auto-layout parent's flow, e.g. after a component swap dropped absolute positioning"),
+        x: import_zod.z.number().optional().describe("Position relative to the parent, applied after positioning"),
+        y: import_zod.z.number().optional().describe("Position relative to the parent, applied after positioning")
       })
     ).describe("Nodes to change"),
     dryRun: import_zod.z.boolean().optional().describe("Report current values without writing")

@@ -4988,10 +4988,24 @@ async function setConstraints(params) {
         return {
           constraints: "constraints" in node ? node.constraints : null,
           clipsContent: "clipsContent" in node ? node.clipsContent : null,
+          positioning: "layoutPositioning" in node ? node.layoutPositioning : null,
+          x: node.x,
+          y: node.y,
         };
       };
       var before = snap();
       if (!dryRun) {
+        // auto-layout 부모 안에서 흐름에서 빼기(ABSOLUTE)/넣기(AUTO). 컴포넌트 교체(swap) 뒤 풀리는 경우 복구용.
+        if (it.positioning) {
+          if (!("layoutPositioning" in node)) throw new Error("Node has no layoutPositioning: " + node.type);
+          var p = node.parent;
+          if (it.positioning === "ABSOLUTE" && !(p && p.layoutMode && p.layoutMode !== "NONE")) {
+            throw new Error("ABSOLUTE needs an auto-layout parent");
+          }
+          node.layoutPositioning = it.positioning;
+        }
+        if (typeof it.x === "number") node.x = it.x;
+        if (typeof it.y === "number") node.y = it.y;
         if (it.horizontal || it.vertical) {
           if (!("constraints" in node)) throw new Error("Node has no constraints: " + node.type);
           node.constraints = {
@@ -5239,11 +5253,26 @@ async function swapInstancesByKey(params) {
         continue;
       }
 
+      // swapComponent 가 auto-layout 안의 절대 위치(ABSOLUTE)를 풀어 버리면 형제들이 밀린다.
+      // 교체 전 positioning/constraints 를 기록했다가 되돌린다.
+      var keepPositioning = "layoutPositioning" in node ? node.layoutPositioning : null;
+      var keepConstraints = "constraints" in node ? node.constraints : null;
       node.swapComponent(target);
+      var positioningKept = true;
+      if (keepPositioning && node.layoutPositioning !== keepPositioning) {
+        try {
+          node.layoutPositioning = keepPositioning;
+        } catch (e) {
+          positioningKept = false;
+        }
+      }
+      if (keepConstraints && keepPositioning === "ABSOLUTE") node.constraints = keepConstraints;
       var after = await node.getMainComponentAsync();
       results.push({
         id: id,
         name: node.name,
+        positioning: "layoutPositioning" in node ? node.layoutPositioning : null,
+        positioningKept: positioningKept,
         status: after && after.key === toKey ? "swapped" : "unverified",
         fromKey: beforeKey,
         fromName: beforeName,
