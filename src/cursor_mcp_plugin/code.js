@@ -308,6 +308,10 @@ async function handleCommand(command, params) {
       return await setSizeConstraints(params);
     case "set_visible":
       return await setVisible(params);
+    case "get_instance_properties":
+      return await getInstanceProperties(params);
+    case "set_instance_properties":
+      return await setInstanceProperties(params);
     case "clear_fills":
       return await clearFills(params);
     case "create_component_from_node":
@@ -1874,8 +1878,11 @@ async function resetInstanceOverrides(params) {
         const main = await node.getMainComponentAsync();
         entry.mainId = main ? main.id : null;
         entry.props = {};
+        entry.bound = {};
         for (const [key, p] of Object.entries(node.componentProperties)) {
           entry.props[key] = p.value;
+          // 속성에 걸린 변수(토큰)도 resetOverrides 가 지우므로 같이 기록한다.
+          if (p.boundVariables && p.boundVariables.value) entry.bound[key] = p.boundVariables.value.id;
         }
       }
       out.push(entry);
@@ -1898,6 +1905,12 @@ async function resetInstanceOverrides(params) {
     sizingV: inst.layoutSizingVertical,
     positioning: inst.layoutPositioning,
     constraints: inst.constraints,
+    // 인스턴스 자신의 필드에 걸린 변수(예: maxHeight ← max/panel). 칠/속성 바인딩은 따로 처리.
+    bound: Object.fromEntries(
+      Object.entries(inst.boundVariables || {})
+        .filter(([field, a]) => a && !Array.isArray(a) && a.id && field !== "componentProperties")
+        .map(([field, a]) => [field, a.id])
+    ),
   }));
 
   const results = [];
@@ -1929,7 +1942,18 @@ async function resetInstanceOverrides(params) {
           const diff = {};
           for (const [key, value] of Object.entries(entry.props)) {
             const cur = node.componentProperties[key];
-            if (cur && cur.value !== value) diff[key] = value;
+            if (!cur) continue;
+            const wantId = entry.bound[key];
+            const curId = cur.boundVariables && cur.boundVariables.value ? cur.boundVariables.value.id : null;
+            if (wantId) {
+              if (curId !== wantId) {
+                const variable = await figma.variables.getVariableByIdAsync(wantId);
+                if (!variable) throw new Error(`variable ${wantId} for ${bareProp(key)} not found`);
+                diff[key] = figma.variables.createVariableAlias(variable);
+              }
+            } else if (cur.value !== value) {
+              diff[key] = value;
+            }
           }
           if (Object.keys(diff).length) {
             node.setProperties(diff);
@@ -1982,6 +2006,14 @@ async function resetInstanceOverrides(params) {
           changed = true;
         }
         if (restoreSize(inst, g)) changed = true;
+        for (const [field, varId] of Object.entries(g.bound)) {
+          const cur = inst.boundVariables && inst.boundVariables[field];
+          if (cur && cur.id === varId) continue;
+          const variable = await figma.variables.getVariableByIdAsync(varId);
+          if (!variable) throw new Error(`variable ${varId} for ${field} not found`);
+          inst.setBoundVariable(field, variable);
+          changed = true;
+        }
         if (changed) results[i].restored++;
       } catch (error) {
         results[i].failed.push({ id: inst.id, name: inst.name, reason: "geometry: " + error.message });
@@ -7241,6 +7273,11 @@ var BIND_FIELDS = {
   strokeWeight: ["strokeWeight"],
   width: ["width"],
   height: ["height"],
+  // auto-layout 프레임/자식의 최소·최대 크기 (예: 패널 max height 에 max/panel 토큰)
+  minWidth: ["minWidth"],
+  maxWidth: ["maxWidth"],
+  minHeight: ["minHeight"],
+  maxHeight: ["maxHeight"],
 };
 
 async function bindVariable(params) {
@@ -7282,22 +7319,8 @@ async function bindVariable(params) {
     variable = await figma.variables.getVariableByIdAsync(refBinding.id);
     if (!variable) throw new Error("Variable not found: " + refBinding.id);
   } else if (params.variableName) {
-    // 활성화된 라이브러리에서 이름으로 찾는다 (manifest teamlibrary 권한 필요).
-    var matches = [];
-    var libColls = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
-    for (var lc = 0; lc < libColls.length; lc++) {
-      var libVars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(libColls[lc].key);
-      for (var lv = 0; lv < libVars.length; lv++) {
-        if (libVars[lv].name === params.variableName) {
-          matches.push({ key: libVars[lv].key, collection: libColls[lc].name, library: libColls[lc].libraryName });
-        }
-      }
-    }
-    if (matches.length === 0) throw new Error("Library variable not found: " + params.variableName);
-    if (matches.length > 1) {
-      throw new Error("Ambiguous variableName, pass variableKey instead: " + JSON.stringify(matches));
-    }
-    variable = await figma.variables.importVariableByKeyAsync(matches[0].key);
+    // 로컬 변수 → 활성화된 라이브러리 순으로 이름으로 찾는다 (라이브러리는 teamlibrary 권한 필요).
+    variable = await resolveVariableRef({ variableName: params.variableName });
   } else {
     throw new Error("Missing variableKey, variableId, variableFromNodeId or variableName parameter");
   }
@@ -7722,6 +7745,134 @@ async function setVisible(params) {
     }
   }
   return { updated: results.filter((r) => r.success).length, results };
+}
+
+// 인스턴스의 컴포넌트 속성(variant/boolean/text/instance-swap) 현재 값을 읽는다.
+// get_node_info 는 이 값을 걸러내므로, 중첩 인스턴스(button-group 등)의 variant 를
+// 확인하려면 이 명령을 쓴다. 키의 "#id" 꼬리는 떼고 bare name 으로 돌려준다.
+const bareProp = (key) => key.split("#")[0];
+
+async function describeInstanceProps(node) {
+  const main = await node.getMainComponentAsync();
+  const owner = main && main.parent && main.parent.type === "COMPONENT_SET" ? main.parent : main;
+  let defs = {};
+  try {
+    defs = (owner && owner.componentPropertyDefinitions) || {};
+  } catch (e) {
+    defs = {};
+  }
+  const props = {};
+  for (const [key, p] of Object.entries(node.componentProperties)) {
+    const entry = { type: p.type, value: p.value };
+    const def = defs[key];
+    if (def && def.variantOptions) entry.options = def.variantOptions;
+    // 속성에 변수(토큰)가 걸려 있으면 value 는 그 변수의 해석값이다.
+    const alias = p.boundVariables && p.boundVariables.value;
+    if (alias) {
+      const v = await figma.variables.getVariableByIdAsync(alias.id);
+      entry.variable = { id: alias.id, name: v ? v.name : null };
+    }
+    props[bareProp(key)] = entry;
+  }
+  return { id: node.id, name: node.name, component: main ? main.name : null, properties: props };
+}
+
+async function getInstanceProperties(params) {
+  const { nodeIds, nested = true } = params || {};
+  const nodes = await getNodesOrThrow(nodeIds);
+  const out = [];
+  const walk = async (node, depth) => {
+    if (node.type === "INSTANCE") {
+      const info = await describeInstanceProps(node);
+      info.depth = depth;
+      out.push(info);
+      if (!nested) return;
+    }
+    if ("children" in node) for (const c of node.children) await walk(c, node.type === "INSTANCE" ? depth + 1 : depth);
+  };
+  for (const node of nodes) await walk(node, 0);
+  return { count: out.length, instances: out };
+}
+
+// { variableId } | { variableKey } | { variableName } 를 Variable 로 바꾼다.
+// 이름은 로컬 변수 → 활성화된 라이브러리 순으로 찾는다. 같은 이름을 여러 번 찾지 않게 캐시한다.
+const variableRefCache = new Map();
+async function resolveVariableRef(ref) {
+  const cacheKey = JSON.stringify(ref);
+  if (variableRefCache.has(cacheKey)) return variableRefCache.get(cacheKey);
+  let variable = null;
+  if (ref.variableId) {
+    variable = await figma.variables.getVariableByIdAsync(ref.variableId);
+  } else if (ref.variableKey) {
+    variable = await figma.variables.importVariableByKeyAsync(ref.variableKey);
+  } else if (ref.variableName) {
+    const locals = await figma.variables.getLocalVariablesAsync();
+    const local = locals.filter((v) => v.name === ref.variableName);
+    if (local.length === 1) variable = local[0];
+    else if (local.length > 1) throw new Error(`Ambiguous local variable "${ref.variableName}", pass variableId`);
+    else {
+      const matches = [];
+      for (const coll of await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync()) {
+        for (const lv of await figma.teamLibrary.getVariablesInLibraryCollectionAsync(coll.key)) {
+          if (lv.name === ref.variableName) matches.push({ key: lv.key, collection: coll.name, library: coll.libraryName });
+        }
+      }
+      if (matches.length > 1) throw new Error(`Ambiguous variableName, pass variableKey: ${JSON.stringify(matches)}`);
+      if (matches.length === 1) variable = await figma.variables.importVariableByKeyAsync(matches[0].key);
+    }
+  } else {
+    throw new Error("Variable ref needs variableId, variableKey or variableName");
+  }
+  if (!variable) throw new Error(`Variable not found: ${cacheKey}`);
+  variableRefCache.set(cacheKey, variable);
+  return variable;
+}
+
+// 인스턴스 속성 값을 바꾼다. properties 의 키는 bare name("size")이나 전체 키 모두 된다.
+// 값으로 { variableName | variableId | variableKey } 를 주면 그 변수(토큰)를 속성에 건다.
+async function setInstanceProperties(params) {
+  const { updates } = params || {};
+  if (!Array.isArray(updates) || updates.length === 0) throw new Error("Missing updates");
+  const results = [];
+  for (const { nodeId, properties } of updates) {
+    try {
+      const node = await figma.getNodeByIdAsync(nodeId);
+      if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+      if (node.type !== "INSTANCE") throw new Error(`Node ${nodeId} is ${node.type}, not INSTANCE`);
+      const keys = Object.keys(node.componentProperties);
+      const boundId = (k) => {
+        const a = node.componentProperties[k].boundVariables;
+        return a && a.value ? a.value.id : null;
+      };
+      const describe = async (k) => {
+        const id = boundId(k);
+        if (!id) return node.componentProperties[k].value;
+        const v = await figma.variables.getVariableByIdAsync(id);
+        return { value: node.componentProperties[k].value, variable: v ? v.name : id };
+      };
+      const diff = {};
+      const before = {};
+      for (const [name, value] of Object.entries(properties || {})) {
+        const key = keys.find((k) => k === name) || keys.find((k) => bareProp(k) === name);
+        if (!key) throw new Error(`Property "${name}" not found (has: ${keys.map(bareProp).join(", ")})`);
+        before[bareProp(key)] = await describe(key);
+        if (value && typeof value === "object") {
+          const variable = await resolveVariableRef(value);
+          if (boundId(key) !== variable.id) diff[key] = figma.variables.createVariableAlias(variable);
+        } else if (boundId(key) || node.componentProperties[key].value !== value) {
+          // 토큰이 걸린 속성에 일반 값을 주면 토큰이 풀리고 그 값이 들어간다.
+          diff[key] = value;
+        }
+      }
+      if (Object.keys(diff).length) node.setProperties(diff);
+      const after = {};
+      for (const k of Object.keys(diff)) after[bareProp(k)] = await describe(k);
+      results.push({ id: nodeId, name: node.name, before, after, changed: Object.keys(diff).length, success: true });
+    } catch (error) {
+      results.push({ id: nodeId, success: false, error: error.message });
+    }
+  }
+  return { updated: results.filter((r) => r.success && r.changed).length, results };
 }
 
 // set_fill_color 에 a=0 을 주면 투명 fill 이 남는다. 레이어 패널에서 fill 을

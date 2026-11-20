@@ -1038,10 +1038,10 @@ server.tool(
   "Bind a variable to one property across many nodes at once — the fix for hardcoded literals. Pass variableKey (from get_local_variables, run against the LIBRARY file) to bind a published library variable in a consuming file; variableId only works for a variable local to the current file. property 'cornerRadius' binds all four corners; 'fills'/'strokes' bind the color of the first SOLID paint and keep its opacity (re-written after binding; each result reports opacityKept). Nodes already bound are reported under skipped, not overwritten. Pass dryRun first.",
   {
     nodeIds: z.array(z.string()).describe("Node ids to bind"),
-    property: z.string().describe("fills | strokes | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height"),
+    property: z.string().describe("fills | strokes | itemSpacing | counterAxisSpacing | cornerRadius | paddingLeft/Right/Top/Bottom | strokeWeight | width | height | minWidth | maxWidth | minHeight | maxHeight"),
     variableKey: z.string().optional().describe("Key of a published variable (imported via importVariableByKeyAsync). Use this across files"),
     variableId: z.string().optional().describe("Id of a variable local to the current file"),
-    variableName: z.string().optional().describe("Full name of a variable in an enabled library (e.g. CL/MT/case/label/warning), resolved via teamLibrary"),
+    variableName: z.string().optional().describe("Full variable name (e.g. max/panel): looked up in local variables first, then enabled libraries via teamLibrary"),
     variableFromNodeId: z.string().optional().describe("Use the variable bound to this node's first SOLID fill (no library permission needed)"),
     overwrite: z.boolean().optional().describe("fills/strokes only: rebind a paint already bound to another variable instead of skipping it"),
     dryRun: z.boolean().optional().describe("Report what would change without writing"),
@@ -3482,6 +3482,8 @@ type FigmaCommand =
   | "set_stroke_style"
   | "set_size_constraints"
   | "set_visible"
+  | "get_instance_properties"
+  | "set_instance_properties"
   | "clear_fills"
   | "create_component_from_node"
   | "add_component_property"
@@ -4567,6 +4569,44 @@ server.tool(
     visible: z.boolean().describe("true to show, false to hide"),
   },
   jsonToolHandler("set_visible", "setting visibility")
+);
+
+server.tool(
+  "get_instance_properties",
+  "Read the current component property values (VARIANT, BOOLEAN, TEXT, INSTANCE_SWAP) of instances, which get_node_info does not return. Walks nested instances too (e.g. a button-group inside a dialog), giving each one's id, depth, main component name, for variants the allowed options, and the variable (token) bound to a property, if any. Keys are bare names (\"size\", not \"size#12:3\").",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("Instances, or containers whose instances to read"),
+    nested: z.boolean().optional().describe("Also read instances nested inside instances (default true)"),
+  },
+  jsonToolHandler("get_instance_properties", "getting instance properties")
+);
+
+server.tool(
+  "set_instance_properties",
+  "Set component property values on instances, including nested ones (ids like I123:4;5:6). Property names may be bare (\"size\") or full keys. Variant values must be one of the options get_instance_properties lists. A value of { variableName | variableId | variableKey } binds that variable (token) to the property instead, as in the properties panel; a plain value on a bound property unbinds it. Names are looked up in local variables, then enabled libraries. Returns before/after per instance.",
+  {
+    updates: z
+      .array(
+        z.object({
+          nodeId: z.string().describe("INSTANCE id"),
+          properties: z
+            .record(
+              z.union([
+                z.string(),
+                z.boolean(),
+                z.object({
+                  variableName: z.string().optional(),
+                  variableId: z.string().optional(),
+                  variableKey: z.string().optional(),
+                }),
+              ])
+            )
+            .describe("Property name -> value or variable ref, e.g. { \"size\": { \"variableName\": \"variants/double\" } }"),
+        })
+      )
+      .min(1),
+  },
+  jsonToolHandler("set_instance_properties", "setting instance properties")
 );
 
 server.tool(
