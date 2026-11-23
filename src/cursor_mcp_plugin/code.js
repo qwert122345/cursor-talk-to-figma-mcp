@@ -1849,6 +1849,29 @@ function paintTokenIds(node) {
   return out;
 }
 
+// Figma 는 Error 가 아닌 값(문자열 등)을 던지기도 해서, catch 안에서 error.message 를 바로 읽으면 그 자리에서 다시 터진다.
+function errMsg(error) {
+  if (error && typeof error.message === "string") return error.message;
+  try {
+    return String(error);
+  } catch (_) {
+    return "unknown error";
+  }
+}
+
+// reset 복원 전용 텍스트 쓰기. setCharacters 는 글꼴 로드가 실패하면 조용히 Inter 로 바꾸고
+// 쓰기 실패도 경고만 남기므로, 여기서는 노드가 쓰는 글꼴을 전부 불러오고 실패하면 그대로 던진다.
+async function restoreText(node, characters) {
+  const len = node.characters.length;
+  const fonts =
+    node.fontName === figma.mixed && len > 0 ? node.getRangeAllFontNames(0, len) : [node.fontName];
+  for (const font of fonts) {
+    if (font && font !== figma.mixed) await figma.loadFontAsync(font);
+  }
+  node.characters = characters;
+  if (node.characters !== characters) throw new Error("text did not stick");
+}
+
 // Reset all overrides on the top-level instances under each node, then
 // re-apply what they showed before: swapped components, component
 // properties, visibility and text. Everything else (fills, sizes, stale
@@ -1933,22 +1956,42 @@ async function resetInstanceOverrides(params) {
   }));
 
   const results = [];
+  // 이미 reset 한 인스턴스. 중간에 예상 못 한 예외가 나도 이 인스턴스들의 위치·크기는 아래에서 꼭 되돌린다.
+  const resetDone = new Array(targets.length).fill(false);
+  let aborted = null;
+  try {
   for (let i = 0; i < targets.length; i++) {
     const inst = targets[i];
-    const before = await snapshot(inst);
-    const result = { id: inst.id, name: inst.name, nodes: before.length, restored: 0, failed: [] };
+    const result = { id: inst.id, name: inst.name, nodes: 0, restored: 0, failed: [] };
     results.push(result);
+    // 기록에 실패하면 되돌릴 근거가 없으니 reset 자체를 하지 않는다.
+    let before;
+    try {
+      before = await snapshot(inst);
+    } catch (error) {
+      result.failed.push({ id: inst.id, name: inst.name, stage: "snapshot", reason: errMsg(error) });
+      result.skipped = "snapshot failed, not reset";
+      continue;
+    }
+    result.nodes = before.length;
     if (dryRun) continue;
 
-    inst.resetOverrides();
+    try {
+      inst.resetOverrides();
+    } catch (error) {
+      result.failed.push({ id: inst.id, name: inst.name, stage: "reset", reason: errMsg(error) });
+      result.skipped = "resetOverrides failed";
+      continue;
+    }
+    resetDone[i] = true;
 
     for (const entry of before) {
-      const node = await figma.getNodeByIdAsync(entry.id);
-      if (!node) {
-        result.failed.push({ id: entry.id, name: entry.name, reason: "missing after reset" });
-        continue;
-      }
       try {
+        const node = await figma.getNodeByIdAsync(entry.id);
+        if (!node) {
+          result.failed.push({ id: entry.id, name: entry.name, stage: "restore", reason: "missing after reset" });
+          continue;
+        }
         let changed = false;
         if (node.type === "INSTANCE" && entry.mainId) {
           const main = await node.getMainComponentAsync();
@@ -1984,7 +2027,7 @@ async function resetInstanceOverrides(params) {
           changed = true;
         }
         if (node.type === "TEXT" && node.characters !== entry.characters) {
-          await setCharacters(node, entry.characters);
+          await restoreText(node, entry.characters);
           changed = true;
         }
         if (entry.size && restoreSize(node, entry.size)) changed = true;
@@ -2006,21 +2049,43 @@ async function resetInstanceOverrides(params) {
           }
         }
       } catch (error) {
-        result.failed.push({ id: entry.id, name: entry.name, reason: error.message });
+        result.failed.push({ id: entry.id, name: entry.name, stage: "restore", reason: errMsg(error) });
       }
     }
+
+    // 텍스트는 다른 단계가 실패해도 끝까지 되돌린다. 한 번 더 비교해 남은 것만 다시 쓰고,
+    // 그래도 안 되면 원래 글자를 결과에 남겨 손으로라도 복구할 수 있게 한다.
+    for (const entry of before) {
+      if (entry.characters === undefined) continue;
+      try {
+        const node = await figma.getNodeByIdAsync(entry.id);
+        if (!node || node.type !== "TEXT" || node.characters === entry.characters) continue;
+        await restoreText(node, entry.characters);
+        result.restored++;
+      } catch (error) {
+        result.textUnrestored = result.textUnrestored || [];
+        result.textUnrestored.push({ id: entry.id, name: entry.name, characters: entry.characters, reason: errMsg(error) });
+      }
+    }
+    if (result.failed.length || result.textUnrestored) result.incomplete = true;
+
     sendProgressUpdate(
       "reset_instance_overrides", "reset_instance_overrides", "in_progress",
       Math.round(((i + 1) / targets.length) * 100), targets.length, i + 1,
       `Reset ${i + 1}/${targets.length}: ${inst.name}`
     );
   }
+  } catch (error) {
+    // 루프 밖으로 새는 예외는 여기서 멈추되, 이미 reset 한 인스턴스의 위치·크기 복원은 계속한다.
+    aborted = { afterInstances: results.length, reason: errMsg(error) };
+  }
 
   if (!dryRun) {
     // Locked layers ignore x/y writes; unlock while putting geometry back.
-    const locked = targets.filter((inst) => inst.locked);
+    const locked = targets.filter((inst, i) => resetDone[i] && inst.locked);
     locked.forEach((inst) => (inst.locked = false));
     for (let i = 0; i < targets.length; i++) {
+      if (!resetDone[i]) continue;
       const inst = targets[i];
       const g = geometry[i];
       try {
@@ -2051,7 +2116,8 @@ async function resetInstanceOverrides(params) {
         }
         if (changed) results[i].restored++;
       } catch (error) {
-        results[i].failed.push({ id: inst.id, name: inst.name, reason: "geometry: " + error.message });
+        results[i].failed.push({ id: inst.id, name: inst.name, stage: "geometry", reason: errMsg(error) });
+        results[i].incomplete = true;
       }
     }
     // Positions last: a later sibling's resize can shrink a hugging parent and
@@ -2061,6 +2127,7 @@ async function resetInstanceOverrides(params) {
     for (let pass = 0; pass < 3; pass++) {
       let moved = false;
       for (let i = 0; i < targets.length; i++) {
+        if (!resetDone[i]) continue;
         const inst = targets[i];
         const g = geometry[i];
         try {
@@ -2071,7 +2138,10 @@ async function resetInstanceOverrides(params) {
             moved = true;
           }
         } catch (error) {
-          if (pass === 0) results[i].failed.push({ id: inst.id, name: inst.name, reason: "position: " + error.message });
+          if (pass === 0) {
+            results[i].failed.push({ id: inst.id, name: inst.name, stage: "position", reason: errMsg(error) });
+            results[i].incomplete = true;
+          }
         }
       }
       if (!moved) break;
@@ -2079,7 +2149,11 @@ async function resetInstanceOverrides(params) {
     locked.forEach((inst) => (inst.locked = true));
   }
 
-  return { dryRun, instances: results.length, results };
+  const incomplete = results.filter((r) => r.incomplete || r.skipped).map((r) => r.id);
+  const out = { dryRun, instances: results.length, results };
+  if (incomplete.length) out.incomplete = incomplete;
+  if (aborted) out.aborted = aborted;
+  return out;
 }
 
 async function createSection(params) {
