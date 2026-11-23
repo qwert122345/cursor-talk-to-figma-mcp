@@ -1,70 +1,47 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Claude Code 가 이 저장소에서 작업할 때 참고하는 안내다.
 
-## Project Overview
+## 개요
 
-MCP (Model Context Protocol) server that bridges Cursor AI IDE with Figma. Three components communicate in a pipeline:
+Claude Code 와 피그마를 잇는 MCP(Model Context Protocol) 서버. 세 부분이 이어져 동작한다.
 
 ```
-Cursor AI ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSocket)→ Figma Plugin
+Claude Code ←(stdio)→ MCP 서버 ←(WebSocket)→ 중계 서버 ←(WebSocket)→ 피그마 플러그인
 ```
 
-## Build & Development Commands
+## 명령
 
 ```bash
-bun install              # Install dependencies
-bun run build            # Build MCP server (tsup → dist/)
-bun run dev              # Build in watch mode
-bun socket               # Start WebSocket relay server (port 3055)
-bun run start            # Run built MCP server
-bun setup                # Full setup (install + write .cursor/mcp.json + .mcp.json)
+bun install      # 의존성 설치
+bun run build    # MCP 서버 빌드 (tsup → dist/)
+bun run dev      # 감시 모드 빌드
+bun socket       # WebSocket 중계 서버 (포트 3055)
+bun setup        # 설치 + 빌드 + .mcp.json 작성(이 저장소의 dist/server.js 를 가리킴)
+node --check src/figma_plugin/code.js   # 플러그인 문법 확인
 ```
 
-There is no test suite or linter configured.
+테스트 스위트·린터는 없다. `test-ds-commands.mjs` 는 플러그인 일부 명령을 가짜 figma 객체로 돌려 보는 하네스다.
 
-## Architecture
+## 구조
 
-### MCP Server (`src/talk_to_figma_mcp/server.ts`)
-The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 50+ tools (create shapes, modify text, manage layouts, export images, etc.) and several AI prompts (design strategies). Communicates with Cursor over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds.
+### MCP 서버 (`src/talk_to_figma_mcp/server.ts`)
+`@modelcontextprotocol/sdk` 로 도구(90여 개)와 작업 안내 프롬프트를 정의한다. Claude Code 와는 stdio, 중계 서버와는 `ws` 로 통신한다. 요청마다 UUID 를 붙여 `pendingRequests` 에 넣고, 플러그인 응답이 오면 끝낸다. 도구를 추가할 땐 `FigmaCommand` 유니언과 `server.tool` 등록을 함께 고친다.
 
-### WebSocket Relay (`src/socket.ts`)
-Lightweight Bun WebSocket server on port 3055 (configurable via `PORT` env). Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
+### 중계 서버 (`src/socket.ts`)
+Bun WebSocket 서버(포트 3055, `PORT` 환경변수로 변경). 채널 단위로 MCP 서버와 플러그인을 잇는다. `join` 으로 채널에 들어가고, 메시지는 같은 채널에만 전달된다.
 
-### Figma Plugin (`src/cursor_mcp_plugin/`)
-Runs inside Figma. `code.js` is the plugin main thread handling 30+ commands via a dispatcher. `ui.html` is the plugin UI for WebSocket connection management. `manifest.json` declares permissions (dynamic-page access, localhost network). The plugin is **not built/bundled** — `code.js` is written directly as the runtime artifact.
+### 피그마 플러그인 (`src/figma_plugin/`)
+피그마 안에서 돈다. `code.js` 가 디스패처로 명령을 처리하는 본체, `ui.html` 이 연결 창, `manifest.json` 이 권한(dynamic-page, teamlibrary, localhost). **빌드하지 않는다** — `code.js` 가 그대로 실행 파일이다.
 
-## Key Patterns
+## 지켜야 할 것
 
-- **Colors**: Figma uses RGBA 0-1 range. The MCP tools accept 0-1 floats and the filter converts to hex for display.
-- **Logging**: All logs go to stderr. Stdout is reserved for MCP protocol messages.
-- **Timeouts**: 30s default per command. Progress updates from the plugin reset the inactivity timer.
-- **Chunking**: Large operations (scanning 100+ nodes) are chunked with progress updates to prevent Figma UI freezing.
-- **Reconnection**: WebSocket auto-reconnects after 2 seconds on disconnect.
-- **Zod validation**: All tool parameters are validated with Zod schemas.
-
-## Setup
-
-1. Run `bun setup` — installs dependencies and writes MCP config for both Cursor (`.cursor/mcp.json`) and Claude Code (`.mcp.json`)
-2. `bun socket` in one terminal (WebSocket relay)
-3. In Figma: Plugins → Development → Link existing plugin → select `src/cursor_mcp_plugin/manifest.json`
-4. Run plugin in Figma, join a channel, then use tools from Cursor or Claude Code
-
-The MCP config written by `bun setup` uses the published package:
-
-```json
-{
-  "mcpServers": {
-    "TalkToFigma": {
-      "command": "bunx",
-      "args": ["cursor-talk-to-figma-mcp@latest"]
-    }
-  }
-}
-```
-
-You can also add it manually for Claude Code via the CLI:
-
-```bash
-claude mcp add TalkToFigma -- bunx cursor-talk-to-figma-mcp@latest
-```
+- **반영 순서**: `code.js` 수정 → 피그마에서 플러그인 재실행(채널 ID 가 바뀜). `server.ts` 수정 → `bun run build` → Claude Code `/mcp` 재연결 → 새 채널로 `join_channel`
+- **`dist/`**: `.gitignore` 에 있지만 추적 중이다. 커밋할 땐 `git add -f dist`
+- **`.mcp.json`**: 사람마다 경로가 다르니 커밋하지 않는다
+- **dynamic-page**: 다른 페이지 노드는 `getNodeByIdAsync`, 전 페이지 순회는 `loadAllPagesAsync` 가 필요하다(무거우니 꼭 필요할 때만)
+- **색**: 피그마는 RGBA 0–1. 도구도 0–1 을 받고 표시할 땐 HEX 로 바꾼다
+- **로그**: 전부 stderr. stdout 은 MCP 프로토콜 전용
+- **시간 제한**: 명령마다 기본 30초. 플러그인이 진행 상황을 보내면 연장된다. 100개가 넘는 작업은 나눠서 진행 상황을 보낸다
+- **검증**: 도구 파라미터는 Zod 스키마로 검증한다
+- **실패 보고**: 쓰기 도구는 한 항목이 실패해도 나머지를 계속하고, 결과에 `failed`·`skipped`·`errors` 로 남긴다. catch 안에서는 `error.message` 대신 `errMsg(error)` 를 쓴다(피그마는 Error 가 아닌 값을 던지기도 한다)

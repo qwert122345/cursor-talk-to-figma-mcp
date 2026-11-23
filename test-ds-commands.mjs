@@ -18,7 +18,7 @@ const ctx = createContext({
     clientStorage: { getAsync: async () => null, setAsync: async () => {} },
   },
 });
-runInContext(readFileSync("src/cursor_mcp_plugin/code.js", "utf8"), ctx);
+runInContext(readFileSync("src/figma_plugin/code.js", "utf8"), ctx);
 const { hardcodedProps, nearestComponent, paintsToValue, ancestorPath, collectBoundVars,
         resolveScanTargets, safeGet, applyLayoutSizing,
         UNBIND_FIELDS, unbindVariable, getComponentProperties, isOutsideComponent } = ctx;

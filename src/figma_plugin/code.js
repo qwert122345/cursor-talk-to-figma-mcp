@@ -1,4 +1,4 @@
-// This is the main code file for the Cursor MCP Figma plugin
+// 피그마 플러그인 본체: MCP 서버의 명령을 받아 피그마 문서를 읽고 고친다 (Talk to Figma MCP)
 // It handles Figma API commands
 
 // Plugin state

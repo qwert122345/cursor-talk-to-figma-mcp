@@ -1,16 +1,9 @@
 {
-  "name": "cursor-talk-to-figma-mcp",
-  "description": "Cursor Talk to Figma MCP",
+  "name": "talk-to-figma-mcp",
+  "description": "Claude Code 용 Talk to Figma MCP (디자인시스템 정리 도구 확장판)",
   "version": "0.3.5",
   "module": "dist/server.js",
   "main": "dist/server.js",
-  "bin": {
-    "cursor-talk-to-figma-mcp": "dist/server.js"
-  },
-  "files": [
-    "dist",
-    "README.md"
-  ],
   "type": "module",
   "scripts": {
     "start": "bun run dist/server.js",
@@ -18,8 +11,7 @@
     "setup": "./scripts/setup.sh",
     "build": "tsup",
     "build:watch": "tsup --watch",
-    "dev": "bun run build:watch",
-    "pub:release": "bun run build && npm publish"
+    "dev": "bun run build:watch"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -32,5 +24,6 @@
     "uuid": "latest",
     "ws": "latest",
     "zod": "3.22.4"
-  }
+  },
+  "private": true
 }

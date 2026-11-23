@@ -1,23 +1,24 @@
 #!/bin/bash
+# 의존성 설치 → MCP 서버 빌드 → Claude Code 용 .mcp.json 작성(이 저장소의 dist/server.js 를 가리킨다).
+# npm 의 원본 패키지(cursor-talk-to-figma-mcp@latest)에는 이 저장소에서 추가한 도구가 없으므로 쓰지 않는다.
+set -e
 
-MCP_CONFIG='{
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+bun install
+bun run build
+
+cat > .mcp.json <<EOF
+{
   "mcpServers": {
     "TalkToFigma": {
-      "command": "bunx",
+      "command": "bun",
       "args": [
-        "cursor-talk-to-figma-mcp@latest"
+        "$ROOT/dist/server.js"
       ]
     }
   }
-}'
-
-bun install
-
-# Cursor: write .cursor/mcp.json
-mkdir -p .cursor
-echo "$MCP_CONFIG" > .cursor/mcp.json
-echo "✓ Cursor MCP config written to .cursor/mcp.json"
-
-# Claude Code: write .mcp.json in project root
-echo "$MCP_CONFIG" > .mcp.json
-echo "✓ Claude Code MCP config written to .mcp.json"
+}
+EOF
+echo "✓ Claude Code MCP 설정을 .mcp.json 에 썼습니다 ($ROOT/dist/server.js)"

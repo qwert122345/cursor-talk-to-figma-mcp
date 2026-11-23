@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Cursor MCP Plugin</title>
+    <title>Talk to Figma MCP</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -258,7 +258,7 @@
       <div class="header">
         <div class="header-text">
           <h1>Talk To Figma MCP Plugin</h1>
-          <p>Connect Figma to Cursor AI using MCP</p>
+          <p>Claude Code 와 피그마를 MCP 로 연결합니다</p>
         </div>
       </div>
 
@@ -289,14 +289,14 @@
         </div>
 
         <div id="connection-status" class="status disconnected">
-          Not connected to Cursor MCP server
+          MCP 중계 서버에 연결되지 않음
         </div>
 
         <div id="mcp-config" class="section hidden">
           <h2>MCP Configuration</h2>
           <p>
-            Copy this configuration to your <code>mcp.json</code> file in
-            Cursor:
+            Claude Code 의 <code>.mcp.json</code> 에 넣을 설정
+            (경로는 저장소 위치로 바꾼다):
           </p>
           <textarea
             id="mcp-json"
@@ -357,11 +357,10 @@
         <div class="section">
           <h2>About Talk To Figma Plugin</h2>
           <p>
-            This plugin allows Cursor AI to communicate with Figma, enabling
-            AI-assisted design operations.
+            Claude Code 가 MCP 로 피그마를 읽고 고칠 수 있게 하는 플러그인입니다.
             <a
               class="link"
-              onclick="window.open(`https://github.com/grab/cursor-talk-to-figma-mcp`, '_blank')"
+              onclick="window.open(`https://github.com/qwert122345/cursor-talk-to-figma-mcp`, '_blank')"
               >Github</a
             >
           </p>
@@ -369,9 +368,9 @@
 
           <h2>How to Use</h2>
           <ol>
-            <li>Make sure the MCP server is running in Cursor</li>
-            <li>Connect to the server using the port number (default: 3055)</li>
-            <li>Once connected, you can interact with Figma through Cursor</li>
+            <li>저장소에서 <code>bun socket</code> 으로 중계 서버를 켠다</li>
+            <li>포트(기본 3055)로 연결하고 채널 ID 를 Claude Code 에 알려 준다</li>
+            <li>연결되면 Claude Code 에서 도구로 피그마를 다룬다</li>
           </ol>
           <p style="font-size: 11px; color: #888; margin-top: 16px;">
             Usage analytics are disabled in this build. The plugin talks only to the local MCP relay on localhost.
@@ -420,12 +419,12 @@
         let statusMessage =
           message ||
           (isConnected
-            ? "Connected to Cursor MCP server"
-            : "Not connected to Cursor MCP server");
+            ? "MCP 중계 서버에 연결됨"
+            : "MCP 중계 서버에 연결되지 않음");
 
         // Add instructions for localhost when disconnected
         if (!isConnected) {
-          statusMessage += `<br><br>Run this in your terminal, then connect<br><code>bunx cursor-talk-to-figma-socket</code>`;
+          statusMessage += `<br><br>저장소에서 중계 서버를 켠 뒤 연결하세요<br><code>bun socket</code>`;
         }
 
         connectionStatus.innerHTML = statusMessage;
@@ -500,7 +499,7 @@
                     {
                       pluginMessage: {
                         type: "notify",
-                        message: `Connected to Cursor MCP server on port ${port} in channel: ${channelName}`,
+                        message: `MCP 중계 서버 연결됨 (포트 ${port}, 채널: ${channelName})`,
                       },
                     },
                     "*"
@@ -858,8 +857,8 @@
         const mcpConfig = {
           mcpServers: {
             TalkToFigma: {
-              command: "bunx",
-              args: ["cursor-talk-to-figma-mcp@latest"],
+              command: "bun",
+              args: ["/절대경로/cursor-talk-to-figma-mcp/dist/server.js"],
             },
           },
         };
