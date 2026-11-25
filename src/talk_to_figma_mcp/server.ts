@@ -5,8 +5,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
-import { readFile, writeFile, mkdir } from "fs/promises";
-import { dirname } from "path";
+import { readFile, writeFile, mkdir, access } from "fs/promises";
+import { dirname, isAbsolute, resolve } from "path";
 
 // Define TypeScript interfaces for Figma responses
 interface FigmaResponse {
@@ -3896,9 +3896,18 @@ server.tool(
     includeTopPrefixes: z.array(z.string()).optional().describe("Only top-level frames whose names start with these"),
     includeHidden: z.boolean().optional().describe("Also dump texts that are hidden (default false)"),
     pageSize: z.number().min(1).max(200).optional().describe("Top-level frames per plugin call (default 20)"),
+    overwrite: z.boolean().optional().describe("Replace outputPath if it already exists (default false)"),
   },
-  async ({ nodeId, outputPath, expectFileName, includeTopPrefixes, includeHidden, pageSize }: any) => {
+  async ({ nodeId, outputPath, expectFileName, includeTopPrefixes, includeHidden, pageSize, overwrite }: any) => {
     try {
+      if (!isAbsolute(outputPath) || !outputPath.endsWith(".json")) {
+        return errorResult("Bad outputPath: ", "give an absolute path ending in .json");
+      }
+      outputPath = resolve(outputPath);
+      const exists = await access(outputPath).then(() => true, () => false);
+      if (exists && overwrite !== true) {
+        return errorResult("File exists: ", `${outputPath} — pass overwrite:true to replace it`);
+      }
       const texts: any[] = [];
       let head: any = null;
       let offset: number | null = 0;

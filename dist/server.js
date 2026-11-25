@@ -6,8 +6,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
-import { readFile, writeFile, mkdir } from "fs/promises";
-import { dirname } from "path";
+import { readFile, writeFile, mkdir, access } from "fs/promises";
+import { dirname, isAbsolute, resolve } from "path";
 var logger = {
   info: (message) => process.stderr.write(`[INFO] ${message}
 `),
@@ -2433,7 +2433,7 @@ async function joinChannel(channelName) {
   }
 }
 function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       connectToFigma();
       reject(new Error("Not connected to Figma. Attempting to connect..."));
@@ -2467,7 +2467,7 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
       }
     }, timeoutMs);
     pendingRequests.set(id, {
-      resolve,
+      resolve: resolve2,
       reject,
       timeout,
       lastActivity: Date.now()
@@ -3124,10 +3124,19 @@ server.tool(
     expectFileName: z.string().optional().describe("Abort when the open file's name differs"),
     includeTopPrefixes: z.array(z.string()).optional().describe("Only top-level frames whose names start with these"),
     includeHidden: z.boolean().optional().describe("Also dump texts that are hidden (default false)"),
-    pageSize: z.number().min(1).max(200).optional().describe("Top-level frames per plugin call (default 20)")
+    pageSize: z.number().min(1).max(200).optional().describe("Top-level frames per plugin call (default 20)"),
+    overwrite: z.boolean().optional().describe("Replace outputPath if it already exists (default false)")
   },
-  async ({ nodeId, outputPath, expectFileName, includeTopPrefixes, includeHidden, pageSize }) => {
+  async ({ nodeId, outputPath, expectFileName, includeTopPrefixes, includeHidden, pageSize, overwrite }) => {
     try {
+      if (!isAbsolute(outputPath) || !outputPath.endsWith(".json")) {
+        return errorResult("Bad outputPath: ", "give an absolute path ending in .json");
+      }
+      outputPath = resolve(outputPath);
+      const exists = await access(outputPath).then(() => true, () => false);
+      if (exists && overwrite !== true) {
+        return errorResult("File exists: ", `${outputPath} \u2014 pass overwrite:true to replace it`);
+      }
       const texts = [];
       let head = null;
       let offset = 0;

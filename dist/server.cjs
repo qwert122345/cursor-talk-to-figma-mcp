@@ -2455,7 +2455,7 @@ async function joinChannel(channelName) {
   }
 }
 function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     if (!ws || ws.readyState !== import_ws.default.OPEN) {
       connectToFigma();
       reject(new Error("Not connected to Figma. Attempting to connect..."));
@@ -2489,7 +2489,7 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 3e4) {
       }
     }, timeoutMs);
     pendingRequests.set(id, {
-      resolve,
+      resolve: resolve2,
       reject,
       timeout,
       lastActivity: Date.now()
@@ -3146,10 +3146,19 @@ server.tool(
     expectFileName: import_zod.z.string().optional().describe("Abort when the open file's name differs"),
     includeTopPrefixes: import_zod.z.array(import_zod.z.string()).optional().describe("Only top-level frames whose names start with these"),
     includeHidden: import_zod.z.boolean().optional().describe("Also dump texts that are hidden (default false)"),
-    pageSize: import_zod.z.number().min(1).max(200).optional().describe("Top-level frames per plugin call (default 20)")
+    pageSize: import_zod.z.number().min(1).max(200).optional().describe("Top-level frames per plugin call (default 20)"),
+    overwrite: import_zod.z.boolean().optional().describe("Replace outputPath if it already exists (default false)")
   },
-  async ({ nodeId, outputPath, expectFileName, includeTopPrefixes, includeHidden, pageSize }) => {
+  async ({ nodeId, outputPath, expectFileName, includeTopPrefixes, includeHidden, pageSize, overwrite }) => {
     try {
+      if (!(0, import_path.isAbsolute)(outputPath) || !outputPath.endsWith(".json")) {
+        return errorResult("Bad outputPath: ", "give an absolute path ending in .json");
+      }
+      outputPath = (0, import_path.resolve)(outputPath);
+      const exists = await (0, import_promises.access)(outputPath).then(() => true, () => false);
+      if (exists && overwrite !== true) {
+        return errorResult("File exists: ", `${outputPath} \u2014 pass overwrite:true to replace it`);
+      }
       const texts = [];
       let head = null;
       let offset = 0;
