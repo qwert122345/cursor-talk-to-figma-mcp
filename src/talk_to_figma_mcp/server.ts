@@ -3804,7 +3804,7 @@ server.tool(
 
 server.tool(
   "apply_text_styles",
-  "Attach local text styles to TEXT nodes that have none. A style matches when fontSize, fontName (family + style), lineHeight and letterSpacing are all equal, so the look does not change. Several styles with the same shape (e.g. Title2/Medium vs Body1/Medium) are reported under ambiguous unless prefer names the one to use. Nodes already styled or with mixed styles are skipped; nodes inside instances are skipped unless includeInstances (style the main component instead). noMatchShapes lists the size|family|style|lineHeight|letterSpacing combos no style covers. Scope with nodeIds, nodeId or pageName. Pass dryRun first.",
+  "Attach local text styles to TEXT nodes that have none. A style matches when fontSize, fontName (family + style), lineHeight and letterSpacing are all equal, so the look does not change. Several styles with the same shape (e.g. Title2/Medium vs Body1/Medium) are reported under ambiguous unless prefer names the one to use. Nodes already styled are skipped. Mixed-format TEXT (links, per-range fonts or styles) is styled range by range: each run of equal formatting is matched on its own and setRangeTextStyleId keeps range colors and hyperlinks; the node is changed only when every range resolves (counted in segmented). Ranges already on another style stay; nodes inside instances are skipped unless includeInstances (style the main component instead). noMatchShapes lists the size|family|style|lineHeight|letterSpacing combos no style covers. Scope with nodeIds, nodeId or pageName. Pass dryRun first.",
   {
     nodeIds: z.array(z.string()).optional().describe("Specific TEXT nodes"),
     nodeId: z.string().optional().describe("Scan TEXT nodes under this node"),

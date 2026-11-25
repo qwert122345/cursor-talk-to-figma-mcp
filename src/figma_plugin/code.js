@@ -8737,33 +8737,86 @@ async function applyTextStyles(params) {
   }
 
   var applied = [], ambiguous = [], noMatch = [], failed = [];
-  var skipped = { alreadyStyled: 0, mixed: 0, insideInstance: 0 };
+  var skipped = { alreadyStyled: 0, insideInstance: 0 };
   var byStyle = {}, noMatchShapes = {};
+  var segmentedCount = 0;
+
+  // 후보 스타일 중 하나 고르기: 하나뿐이면 그것, 여럿이면 prefer 순서. 못 고르면 null.
+  function pickFrom(cands) {
+    if (cands.length === 1) return cands[0];
+    for (var p = 0; p < prefer.length; p++) {
+      var hit = cands.find(function (c) { return c.name === prefer[p]; });
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  // 서식이 섞인 TEXT(링크·구간별 폰트·구간별 스타일): 서식이 같은 구간마다 스타일을 고른다.
+  // 노드 전체가 풀릴 때만(모든 구간이 그대로 두거나 매칭) 적용 — 일부만 바꿔 두지 않는다.
+  // 텍스트 스타일은 칠·링크를 건드리지 않으므로 구간 색·하이퍼링크는 그대로 남는다.
+  async function styleBySegments(node) {
+    var segs = node.getStyledTextSegments(["fontName", "fontSize", "lineHeight", "letterSpacing", "textStyleId"]);
+    var plan = [], missShapes = [], ambShapes = [];
+    for (var s = 0; s < segs.length; s++) {
+      var seg = segs[s];
+      if (seg.textStyleId && !restyleIds[seg.textStyleId]) continue; // 이미 다른 스타일 — 그대로
+      var k = shapeKey(seg.fontSize, seg.fontName, seg.lineHeight, seg.letterSpacing);
+      var cs = byShape[k] || [];
+      var pk = pickFrom(cs);
+      if (pk) plan.push({ start: seg.start, end: seg.end, style: pk });
+      else if (cs.length > 1) ambShapes.push({ shape: k, candidates: cs.map(function (c) { return c.name; }) });
+      else missShapes.push(k);
+    }
+    if (!plan.length && !missShapes.length && !ambShapes.length) { skipped.alreadyStyled++; return; }
+    if (ambShapes.length) {
+      if (ambiguous.length < limit) ambiguous.push({ id: node.id, name: node.name, segmented: true, shapes: ambShapes });
+      return;
+    }
+    if (missShapes.length) {
+      missShapes.forEach(function (k) { noMatchShapes[k] = (noMatchShapes[k] || 0) + 1; });
+      if (noMatch.length < limit) noMatch.push({ id: node.id, name: node.name, segmented: true, shapes: missShapes, text: node.characters.slice(0, 30) });
+      return;
+    }
+    if (!dryRun) {
+      try {
+        var len = node.characters.length;
+        var fonts = len > 0 ? node.getRangeAllFontNames(0, len) : [];
+        for (var f = 0; f < fonts.length; f++) await figma.loadFontAsync(fonts[f]);
+        for (var q = 0; q < plan.length; q++) {
+          await figma.loadFontAsync(plan[q].style.fontName);
+          await node.setRangeTextStyleIdAsync(plan[q].start, plan[q].end, plan[q].style.id);
+        }
+      } catch (e) {
+        failed.push({ id: node.id, name: node.name, reason: errMsg(e) });
+        return;
+      }
+    }
+    segmentedCount++;
+    var names = {};
+    plan.forEach(function (x) { names[x.style.name] = true; });
+    Object.keys(names).forEach(function (nm) { byStyle[nm] = (byStyle[nm] || 0) + 1; });
+    if (applied.length < limit) applied.push({ id: node.id, name: node.name, style: Object.keys(names).join(", "), segments: plan.length });
+  }
 
   for (var t = 0; t < targets.length; t++) {
     var node = targets[t];
     if (node.type !== "TEXT") continue;
-    if (node.textStyleId === figma.mixed) { skipped.mixed++; continue; }
-    if (node.textStyleId) {
+    var isMixed = node.textStyleId === figma.mixed || node.fontSize === figma.mixed || node.fontName === figma.mixed ||
+      node.lineHeight === figma.mixed || node.letterSpacing === figma.mixed;
+    if (!isMixed && node.textStyleId) {
       // restyleFrom: 이 스타일들에 묶인 노드는 다시 매칭한다(예: Body2/Bold → .Doc/Body2/Bold).
       var cur = restyleIds[node.textStyleId];
       if (!cur) { skipped.alreadyStyled++; continue; }
     }
     if (!includeInstances && insideInstance(node)) { skipped.insideInstance++; continue; }
-    if (node.fontSize === figma.mixed || node.fontName === figma.mixed) { skipped.mixed++; continue; }
+    if (isMixed) { await styleBySegments(node); continue; }
 
     var key = shapeKey(node.fontSize, node.fontName, node.lineHeight, node.letterSpacing);
     var cands = byShape[key] || [];
-    var pick = null;
-    if (cands.length === 1) pick = cands[0];
-    else if (cands.length > 1) {
-      for (var p = 0; p < prefer.length && !pick; p++) {
-        pick = cands.find(function (c) { return c.name === prefer[p]; }) || null;
-      }
-      if (!pick) {
-        if (ambiguous.length < limit) ambiguous.push({ id: node.id, name: node.name, shape: key, candidates: cands.map(function (c) { return c.name; }) });
-        continue;
-      }
+    var pick = pickFrom(cands);
+    if (!pick && cands.length > 1) {
+      if (ambiguous.length < limit) ambiguous.push({ id: node.id, name: node.name, shape: key, candidates: cands.map(function (c) { return c.name; }) });
+      continue;
     }
     if (!pick) {
       noMatchShapes[key] = (noMatchShapes[key] || 0) + 1;
@@ -8790,6 +8843,7 @@ async function applyTextStyles(params) {
     scanned: targets.length,
     applied: appliedCount,
     byStyle: byStyle,
+    segmented: segmentedCount, // 서식이 섞여 구간별로 스타일을 건 노드 수
     skipped: skipped,
     ambiguousCount: ambiguous.length,
     noMatchCount: Object.keys(noMatchShapes).reduce(function (a, k) { return a + noMatchShapes[k]; }, 0),
