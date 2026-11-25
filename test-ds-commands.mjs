@@ -209,7 +209,7 @@ assert.throws(
   /HUG sizing/
 );
 assert.throws(
-  () => applyLayoutSizing({ type: "VECTOR", parent: autoParent }, "FILL"),
+  () => applyLayoutSizing({ type: "GROUP", parent: autoParent }, "FILL"),
   /does not support layout sizing/
 );
 assert.throws(

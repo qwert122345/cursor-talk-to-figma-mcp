@@ -26,7 +26,7 @@ Claude Code ←(stdio)→ MCP 서버 ←(WebSocket)→ 중계 서버 ←(WebSock
    bun setup
    ```
 
-   의존성 설치 → `bun run build` → 저장소 루트에 `.mcp.json`(이 저장소의 `dist/server.js` 를 가리킴) 작성까지 한다. 아래 3번은 손으로 할 때의 같은 내용이다.
+   의존성 설치 → `bun run build` → 저장소 루트에 `.mcp.json`(이 저장소의 `dist/server.js` 를 가리킴) 작성 → 어느 폴더에서든 쓰는 중계 서버 명령 `talk-to-figma-socket` 등록(`~/.local/bin`)까지 한다. 아래 3번은 손으로 할 때의 같은 내용이다.
 
 3. Claude Code 에 MCP 서버 등록 — **빌드한 로컬 파일을 가리킨다**
 
@@ -53,11 +53,13 @@ Claude Code ←(stdio)→ MCP 서버 ←(WebSocket)→ 중계 서버 ←(WebSock
 
 ## 사용
 
-1. 중계 서버 실행
+1. 중계 서버 실행 — 어느 폴더에서든
 
    ```bash
-   bun socket
+   talk-to-figma-socket
    ```
+
+   (저장소 폴더 안에서는 `bun socket` 도 같다. 중계 서버는 내 컴퓨터에서만 접속을 받는다 — Windows WSL 에선 `src/socket.ts` 의 `hostname` 을 `"0.0.0.0"` 으로)
 
 2. 작업할 **피그마 파일에서** 플러그인 실행 → 창에 나온 **채널 ID** 확인
 3. Claude Code 에 채널 ID 를 알려 준다 → `join_channel` 로 접속

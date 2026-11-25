@@ -14,34 +14,13 @@ function handleConnection(ws: ServerWebSocket<any>) {
     type: "system",
     message: "Please join a channel to start chatting",
   }));
-
-  ws.close = () => {
-    console.log("Client disconnected");
-
-    // Remove client from their channel
-    channels.forEach((clients, channelName) => {
-      if (clients.has(ws)) {
-        clients.delete(ws);
-
-        // Notify other clients in same channel
-        clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: "system",
-              message: "A user has left the channel",
-              channel: channelName
-            }));
-          }
-        });
-      }
-    });
-  };
 }
 
 const server = Bun.serve({
   port: 3055,
-  // uncomment this to allow connections in windows wsl
-  // hostname: "0.0.0.0",
+  // 내 컴퓨터에서만 접속을 받는다(기본값은 같은 네트워크 전체에 열림).
+  // Windows WSL 에서 쓸 땐 "0.0.0.0" 으로 바꾼다
+  hostname: "127.0.0.1",
   fetch(req: Request, server: Server) {
     // Handle CORS preflight
     if (req.method === "OPTIONS") {
@@ -77,14 +56,9 @@ const server = Bun.serve({
     message(ws: ServerWebSocket<any>, message: string | Buffer) {
       try {
         const data = JSON.parse(message as string);
-        console.log(`\n=== Received message from client ===`);
-        console.log(`Type: ${data.type}, Channel: ${data.channel || 'N/A'}`);
         if (data.message?.command) {
-          console.log(`Command: ${data.message.command}, ID: ${data.id}`);
-        } else if (data.message?.result) {
-          console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
+          console.log(`Command: ${data.message.command} (${data.channel})`);
         }
-        console.log(`Full message:`, JSON.stringify(data, null, 2));
 
         if (data.type === "join") {
           const channelName = data.channel;
@@ -168,16 +142,12 @@ const server = Bun.serve({
                 sender: "peer",
                 channel: channelName
               };
-              console.log(`\n=== Broadcasting to peer #${broadcastCount} ===`);
-              console.log(JSON.stringify(broadcastMessage, null, 2));
               client.send(JSON.stringify(broadcastMessage));
             }
           });
           
           if (broadcastCount === 0) {
             console.log(`⚠️  No other clients in channel "${channelName}" to receive message!`);
-          } else {
-            console.log(`✓ Broadcast to ${broadcastCount} peer(s) in channel "${channelName}"`);
           }
         }
 

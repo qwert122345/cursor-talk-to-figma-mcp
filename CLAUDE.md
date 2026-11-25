@@ -16,8 +16,8 @@ Claude Code ←(stdio)→ MCP 서버 ←(WebSocket)→ 중계 서버 ←(WebSock
 bun install      # 의존성 설치
 bun run build    # MCP 서버 빌드 (tsup → dist/)
 bun run dev      # 감시 모드 빌드
-bun socket       # WebSocket 중계 서버 (포트 3055)
-bun setup        # 설치 + 빌드 + .mcp.json 작성(이 저장소의 dist/server.js 를 가리킴)
+bun socket       # WebSocket 중계 서버 (포트 3055, 127.0.0.1 만). 저장소 밖에선 talk-to-figma-socket
+bun setup        # 설치 + 빌드 + .mcp.json 작성 + ~/.local/bin/talk-to-figma-socket 링크
 node --check src/figma_plugin/code.js   # 플러그인 문법 확인
 ```
 

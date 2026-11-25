@@ -62,6 +62,16 @@ const logger = {
   log: (message: string) => process.stderr.write(`[LOG] ${message}\n`)
 };
 
+// Every tool answers in the same two shapes: JSON of the plugin's result, or an error flagged with isError.
+function jsonResult(result: unknown) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+}
+
+function errorResult(prefix: string, error: unknown) {
+  const reason = error instanceof Error ? error.message : String(error);
+  return { content: [{ type: "text" as const, text: prefix + reason }], isError: true };
+}
+
 // WebSocket connection and request tracking
 let ws: WebSocket | null = null;
 const pendingRequests = new Map<string, {
@@ -94,24 +104,9 @@ server.tool(
   async () => {
     try {
       const result = await sendCommandToFigma("get_document_info");
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting document info: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting document info: `, error);
     }
   }
 );
@@ -124,24 +119,9 @@ server.tool(
   async () => {
     try {
       const result = await sendCommandToFigma("get_selection");
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting selection: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting selection: `, error);
     }
   }
 );
@@ -154,24 +134,9 @@ server.tool(
   async () => {
     try {
       const result = await sendCommandToFigma("read_my_design", {});
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting node info: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting node info: `, error);
     }
   }
 );
@@ -186,24 +151,13 @@ server.tool(
   async ({ nodeId }: any) => {
     try {
       const result = await sendCommandToFigma("get_node_info", { nodeId });
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(filterFigmaNode(result))
-          }
-        ]
-      };
+      // The plugin skips VECTOR nodes (returns null); say so instead of an empty answer
+      if (!result) {
+        return jsonResult({ nodeId, type: "VECTOR", note: "VECTOR nodes are not dumped here; use get_vector_paths" });
+      }
+      return jsonResult(filterFigmaNode(result));
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting node info: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting node info: `, error);
     }
   }
 );
@@ -223,8 +177,8 @@ function rgbaToHex(color: any): string {
 }
 
 function filterFigmaNode(node: any) {
-  // Skip VECTOR type nodes
-  if (node.type === "VECTOR") {
+  // Skip VECTOR type nodes (the plugin already sends them as null)
+  if (!node || node.type === "VECTOR") {
     return null;
   }
 
@@ -335,15 +289,7 @@ server.tool(
         ]
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting nodes info: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting nodes info: `, error);
     }
   }
 );
@@ -383,15 +329,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error creating rectangle: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error creating rectangle: `, error);
     }
   }
 );
@@ -512,15 +450,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error creating frame: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error creating frame: `, error);
     }
   }
 );
@@ -617,15 +547,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error creating text: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error creating text: `, error);
     }
   }
 );
@@ -658,15 +580,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting fill color: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error setting fill color: `, error);
     }
   }
 );
@@ -701,15 +615,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting stroke color: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error setting stroke color: `, error);
     }
   }
 );
@@ -736,15 +642,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error moving node: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error moving node: `, error);
     }
   }
 );
@@ -771,14 +669,7 @@ server.tool(
         ]
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error cloning node: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
-      };
+      return errorResult(`Error cloning node: `, error);
     }
   }
 );
@@ -809,15 +700,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error resizing node: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error resizing node: `, error);
     }
   }
 );
@@ -841,15 +724,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error deleting node: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error deleting node: `, error);
     }
   }
 );
@@ -864,24 +739,9 @@ server.tool(
   async ({ nodeIds }: any) => {
     try {
       const result = await sendCommandToFigma("delete_multiple_nodes", { nodeIds });
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error deleting multiple nodes: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error deleting multiple nodes: `, error);
     }
   }
 );
@@ -917,15 +777,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error exporting node as image: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error exporting node as image: `, error);
     }
   }
 );
@@ -954,15 +806,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting text content: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error setting text content: `, error);
     }
   }
 );
@@ -975,24 +819,9 @@ server.tool(
   async () => {
     try {
       const result = await sendCommandToFigma("get_styles");
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting styles: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting styles: `, error);
     }
   }
 );
@@ -1010,24 +839,9 @@ server.tool(
   async ({ nodeIds, from, to, dryRun }: any) => {
     try {
       const result = await sendCommandToFigma("rename_variant_property", { nodeIds, from, to, dryRun });
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error renaming variant property: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error renaming variant property: `, error);
     }
   }
 );
@@ -1049,18 +863,9 @@ server.tool(
   async ({ nodeIds, property, variableKey, variableId, variableFromNodeId, variableName, overwrite, dryRun }: any) => {
     try {
       const result = await sendCommandToFigma("bind_variable", { nodeIds, property, variableKey, variableId, variableFromNodeId, variableName, overwrite, dryRun });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result) }]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error binding variable: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error binding variable: `, error);
     }
   }
 );
@@ -1082,18 +887,9 @@ server.tool(
   async ({ nodeIds, pageName, nodeId, excludePages, onlyOutsideComponents, property, properties, dryRun }: any) => {
     try {
       const result = await sendCommandToFigma("unbind_variable", { nodeIds, pageName, nodeId, excludePages, onlyOutsideComponents, property, properties, dryRun });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result) }]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error unbinding variable: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error unbinding variable: `, error);
     }
   }
 );
@@ -1109,18 +905,9 @@ server.tool(
   async ({ nodeIds, pageName }: any) => {
     try {
       const result = await sendCommandToFigma("get_component_properties", { nodeIds, pageName });
-      return {
-        content: [{ type: "text", text: JSON.stringify(result) }]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting component properties: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error getting component properties: `, error);
     }
   }
 );
@@ -1138,24 +925,9 @@ server.tool(
   async ({ nodeIds, toKey, viaNodeId, dryRun }: any) => {
     try {
       const result = await sendCommandToFigma("swap_instances_by_key", { nodeIds, toKey, viaNodeId, dryRun });
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error swapping instances: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error swapping instances: `, error);
     }
   }
 );
@@ -1170,24 +942,9 @@ server.tool(
   async ({ sample }: any) => {
     try {
       const result = await sendCommandToFigma("get_grid_usage", { sample });
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting grid usage: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting grid usage: `, error);
     }
   }
 );
@@ -1202,24 +959,9 @@ server.tool(
   async ({ checkPublished }: any) => {
     try {
       const result = await sendCommandToFigma("get_local_components", { checkPublished }, 600000);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting local components: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting local components: `, error);
     }
   }
 );
@@ -1232,24 +974,9 @@ server.tool(
   async () => {
     try {
       const result = await sendCommandToFigma("get_local_variables", {}, 60000);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting local variables: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting local variables: `, error);
     }
   }
 );
@@ -1273,24 +1000,9 @@ server.tool(
         { nodeId, pageName, excludePages, detail, limit, offset },
         120000
       );
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting variable bindings: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting variable bindings: `, error);
     }
   }
 );
@@ -1311,16 +1023,9 @@ server.tool(
         { nodeId, dryRun, onlyRemote },
         300000
       );
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error unbinding styles: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error unbinding styles: `, error);
     }
   }
 );
@@ -1342,16 +1047,9 @@ server.tool(
         { nodeId, dryRun, onlyRemote, maxPasses },
         300000
       );
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error detaching instances: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error detaching instances: `, error);
     }
   }
 );
@@ -1372,18 +1070,9 @@ server.tool(
         { nodeId, pageName, excludePages },
         120000
       );
-      return {
-        content: [{ type: "text", text: JSON.stringify(result) }]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting hyperlinks: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error getting hyperlinks: `, error);
     }
   }
 );
@@ -1404,24 +1093,9 @@ server.tool(
         { nodeId, pageName, excludePages },
         120000
       );
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting layout audit: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting layout audit: `, error);
     }
   }
 );
@@ -1437,17 +1111,9 @@ server.tool(
   async ({ nodeIds, opacity }: any) => {
     try {
       const result = await sendCommandToFigma("set_multiple_opacity", { nodeIds, opacity }, 60000);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting opacity: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error setting opacity: `, error);
     }
   }
 );
@@ -1475,23 +1141,9 @@ server.tool(
         { name, exact, types, parentTypes, idsOnly, nodeId, pageName, excludePages, limit, offset },
         120000
       );
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error finding nodes by name: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
-      };
+      return errorResult(`Error finding nodes by name: `, error);
     }
   }
 );
@@ -1516,24 +1168,9 @@ server.tool(
         { nodeId, pageName, excludePages, nameFilter, includeFaded, limit, offset },
         120000
       );
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error finding hidden nodes: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error finding hidden nodes: `, error);
     }
   }
 );
@@ -1551,9 +1188,9 @@ server.tool(
   async (params: any) => {
     try {
       const result = await sendCommandToFigma("find_variable_usage", params, 600000);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return { content: [{ type: "text", text: `Error finding variable usage: ${error instanceof Error ? error.message : String(error)}` }] };
+      return errorResult(`Error finding variable usage: `, error);
     }
   }
 );
@@ -1578,24 +1215,9 @@ server.tool(
         { pageName, excludePages, instancesFor, instanceLimit },
         120000
       );
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting instance census: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting instance census: `, error);
     }
   }
 );
@@ -1614,23 +1236,9 @@ server.tool(
         nodeId,
         includeCategories
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting annotations: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
-      };
+      return errorResult(`Error getting annotations: `, error);
     }
   }
 );
@@ -1657,23 +1265,9 @@ server.tool(
         categoryId,
         properties
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result)
-          }
-        ]
-      };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting annotation: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
-      };
+      return errorResult(`Error setting annotation: `, error);
     }
   }
 );
@@ -1789,15 +1383,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting multiple annotations: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error setting multiple annotations: `, error);
     }
   }
 );
@@ -1832,15 +1418,7 @@ server.tool(
         ]
       }
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error creating component instance: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error creating component instance: `, error);
     }
   }
 );
@@ -1870,14 +1448,7 @@ server.tool(
         ]
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error copying instance overrides: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
-      };
+      return errorResult(`Error copying instance overrides: `, error);
     }
   }
 );
@@ -1919,14 +1490,7 @@ server.tool(
         };
       }
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting instance overrides: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
-      };
+      return errorResult(`Error setting instance overrides: `, error);
     }
   }
 );
@@ -1964,15 +1528,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting corner radius: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error setting corner radius: `, error);
     }
   }
 );
@@ -2153,15 +1709,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error scanning text nodes: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error scanning text nodes: `, error);
     }
   }
 );
@@ -2235,15 +1783,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error scanning nodes by types: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error scanning nodes by types: `, error);
     }
   }
 );
@@ -2478,15 +2018,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting multiple text contents: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error setting multiple text contents: `, error);
     }
   }
 );
@@ -2730,14 +2262,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting layout mode: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error setting layout mode: `, error);
     }
   }
 );
@@ -2784,14 +2309,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting padding: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error setting padding: `, error);
     }
   }
 );
@@ -2838,14 +2356,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting axis alignment: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error setting axis alignment: `, error);
     }
   }
 );
@@ -2871,14 +2382,7 @@ server.tool(
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error renaming nodes: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error renaming nodes: `, error);
     }
   }
 );
@@ -2929,14 +2433,7 @@ server.tool(
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting layout sizing: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error setting layout sizing: `, error);
     }
   }
 );
@@ -2976,14 +2473,7 @@ server.tool(
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error cloning nodes: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error cloning nodes: `, error);
     }
   }
 );
@@ -3030,14 +2520,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting layout sizing: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error setting layout sizing: `, error);
     }
   }
 );
@@ -3073,14 +2556,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting spacing: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error setting spacing: `, error);
     }
   }
 );
@@ -3112,15 +2588,7 @@ server.tool(
         },
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error getting reactions: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error getting reactions: `, error);
     }
   }
 );
@@ -3147,14 +2615,7 @@ server.tool(
         ]
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting default connector: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
-      };
+      return errorResult(`Error setting default connector: `, error);
     }
   }
 );
@@ -3196,14 +2657,7 @@ server.tool(
         ]
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error creating connections: ${error instanceof Error ? error.message : String(error)}`
-          }
-        ]
-      };
+      return errorResult(`Error creating connections: `, error);
     }
   }
 );
@@ -3228,14 +2682,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting focus: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error setting focus: `, error);
     }
   }
 );
@@ -3260,14 +2707,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting selections: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error setting selections: `, error);
     }
   }
 );
@@ -3307,14 +2747,7 @@ server.tool(
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error selecting hardcoded nodes: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error selecting hardcoded nodes: `, error);
     }
   }
 );
@@ -3485,6 +2918,7 @@ type FigmaCommand =
   | "get_instance_properties"
   | "set_instance_properties"
   | "get_variable_modes"
+  | "find_mode_usage"
   | "set_variable_mode"
   | "clear_fills"
   | "create_component_from_node"
@@ -3498,283 +2932,9 @@ type FigmaCommand =
   | "set_hyperlink"
   | "create_variables";
 
-type CommandParams = {
-  get_document_info: Record<string, never>;
-  get_selection: Record<string, never>;
-  get_node_info: { nodeId: string };
-  get_nodes_info: { nodeIds: string[] };
-  create_rectangle: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    name?: string;
-    parentId?: string;
-  };
-  create_frame: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    name?: string;
-    parentId?: string;
-    fillColor?: { r: number; g: number; b: number; a?: number };
-    strokeColor?: { r: number; g: number; b: number; a?: number };
-    strokeWeight?: number;
-  };
-  create_text: {
-    x: number;
-    y: number;
-    text: string;
-    fontSize?: number;
-    fontWeight?: number;
-    fontColor?: { r: number; g: number; b: number; a?: number };
-    name?: string;
-    parentId?: string;
-  };
-  set_fill_color: {
-    nodeId: string;
-    r: number;
-    g: number;
-    b: number;
-    a?: number;
-  };
-  set_stroke_color: {
-    nodeId: string;
-    r: number;
-    g: number;
-    b: number;
-    a?: number;
-    weight?: number;
-  };
-  move_node: {
-    nodeId: string;
-    x: number;
-    y: number;
-  };
-  resize_node: {
-    nodeId: string;
-    width: number;
-    height: number;
-  };
-  delete_node: {
-    nodeId: string;
-  };
-  delete_multiple_nodes: {
-    nodeIds: string[];
-  };
-  get_styles: Record<string, never>;
-  get_local_components: { checkPublished?: boolean };
-  get_team_components: Record<string, never>;
-  create_component_instance: {
-    componentKey: string;
-    x: number;
-    y: number;
-  };
-  get_instance_overrides: {
-    instanceNodeId: string | null;
-  };
-  set_instance_overrides: {
-    targetNodeIds: string[];
-    sourceInstanceId: string;
-  };
-  export_node_as_image: {
-    nodeId: string;
-    format?: "PNG" | "JPG" | "SVG" | "PDF";
-    scale?: number;
-  };
-  execute_code: {
-    code: string;
-  };
-  join: {
-    channel: string;
-  };
-  set_corner_radius: {
-    nodeId: string;
-    radius: number;
-    corners?: boolean[];
-  };
-  clone_node: {
-    nodeId: string;
-    x?: number;
-    y?: number;
-  };
-  set_text_content: {
-    nodeId: string;
-    text: string;
-  };
-  scan_text_nodes: {
-    nodeId: string;
-    useChunking: boolean;
-    chunkSize: number;
-  };
-  set_multiple_text_contents: {
-    nodeId: string;
-    text: Array<{ nodeId: string; text: string }>;
-  };
-  get_annotations: {
-    nodeId?: string;
-    includeCategories?: boolean;
-  };
-  set_annotation: {
-    nodeId: string;
-    annotationId?: string;
-    labelMarkdown: string;
-    categoryId?: string;
-    properties?: Array<{ type: string }>;
-  };
-  set_multiple_annotations: SetMultipleAnnotationsParams;
-  scan_nodes_by_types: {
-    nodeId: string;
-    types: Array<string>;
-  };
-  get_reactions: { nodeIds: string[] };
-  set_default_connector: {
-    connectorId?: string | undefined;
-  };
-  create_connections: {
-    connections: Array<{
-      startNodeId: string;
-      endNodeId: string;
-      text?: string;
-    }>;
-  };
-  set_focus: {
-    nodeId: string;
-  };
-  set_selections: {
-    nodeIds: string[];
-  };
-  set_image_fill: {
-    nodeId: string;
-    imageBase64: string;
-    scaleMode?: "FILL" | "FIT" | "CROP" | "TILE";
-  };
-  rename_node: {
-    nodeId: string;
-    name: string;
-  };
-  reset_instance_overrides: {
-    nodeIds: string[];
-    dryRun?: boolean;
-  };
-  set_component_description: {
-    items: { nodeId: string; description: string }[];
-  };
-  grid_layout: {
-    op: "info" | "set" | "place";
-    nodeId?: string;
-    limit?: number;
-    items?: { nodeId: string; props?: Record<string, unknown>; position?: Record<string, unknown> }[];
-  };
-  set_constraints: {
-    items: { nodeId: string; horizontal?: string; vertical?: string; clipsContent?: boolean }[];
-    dryRun?: boolean;
-  };
-  create_section: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    name?: string;
-  };
-  set_parent: {
-    nodeId: string;
-    parentId: string;
-    x?: number;
-    y?: number;
-    index?: number;
-  };
-  get_local_variables: Record<string, never>;
-  get_variable_bindings: {
-    nodeId?: string;
-    pageName?: string;
-    excludePages?: string[];
-    detail?: boolean;
-    limit?: number;
-    offset?: number;
-  };
-  get_instance_census: {
-    pageName?: string;
-    excludePages?: string[];
-    instancesFor?: string;
-    instanceLimit?: number;
-  };
-  get_layout_audit: {
-    nodeId?: string;
-    pageName?: string;
-    excludePages?: string[];
-  };
-  find_hidden_nodes: {
-    nodeId?: string;
-    pageName?: string;
-    excludePages?: string[];
-    nameFilter?: string;
-    limit?: number;
-    offset?: number;
-  };
-  find_nodes_by_name: {
-    name: string;
-    exact?: boolean;
-    types?: string[];
-    parentTypes?: string[];
-    idsOnly?: boolean;
-    nodeId?: string;
-    pageName?: string;
-    excludePages?: string[];
-    limit?: number;
-    offset?: number;
-  };
-  set_multiple_opacity: {
-    nodeIds: string[];
-    opacity: number;
-  };
-  get_hyperlinks: {
-    nodeId?: string;
-    pageName?: string;
-    excludePages?: string[];
-  };
-  detach_instances: {
-    nodeId: string;
-    dryRun?: boolean;
-    onlyRemote?: boolean;
-    maxPasses?: number;
-  };
-  unbind_styles: {
-    nodeId: string;
-    dryRun?: boolean;
-    onlyRemote?: boolean;
-  };
-
-};
 
 
 // Helper function to process Figma node responses
-function processFigmaNodeResponse(result: unknown): any {
-  if (!result || typeof result !== "object") {
-    return result;
-  }
-
-  // Check if this looks like a node response
-  const resultObj = result as Record<string, unknown>;
-  if ("id" in resultObj && typeof resultObj.id === "string") {
-    // It appears to be a node response, log the details
-    console.info(
-      `Processed Figma node: ${resultObj.name || "Unknown"} (ID: ${resultObj.id
-      })`
-    );
-
-    if ("x" in resultObj && "y" in resultObj) {
-      console.debug(`Node position: (${resultObj.x}, ${resultObj.y})`);
-    }
-
-    if ("width" in resultObj && "height" in resultObj) {
-      console.debug(`Node dimensions: ${resultObj.width}×${resultObj.height}`);
-    }
-  }
-
-  return result;
-}
 
 // Update the connectToFigma function
 function connectToFigma(port: number = 3055) {
@@ -3847,15 +3007,9 @@ function connectToFigma(port: number = 3055) {
 
       // Handle regular responses
       const myResponse = json.message;
-      logger.debug(`Received message: ${JSON.stringify(myResponse)}`);
-      logger.log('myResponse' + JSON.stringify(myResponse));
 
-      // Handle response to a request
-      if (
-        myResponse.id &&
-        pendingRequests.has(myResponse.id) &&
-        myResponse.result
-      ) {
+      // Handle response to a request (result may legitimately be null, e.g. get_node_info on a VECTOR)
+      if (myResponse && myResponse.id && pendingRequests.has(myResponse.id)) {
         const request = pendingRequests.get(myResponse.id)!;
         clearTimeout(request.timeout);
 
@@ -3863,15 +3017,12 @@ function connectToFigma(port: number = 3055) {
           logger.error(`Error from Figma: ${myResponse.error}`);
           request.reject(new Error(myResponse.error));
         } else {
-          if (myResponse.result) {
-            request.resolve(myResponse.result);
-          }
+          request.resolve(myResponse.result);
         }
 
         pendingRequests.delete(myResponse.id);
       } else {
-        // Handle broadcast messages or events
-        logger.info(`Received broadcast message: ${JSON.stringify(myResponse)}`);
+        // Broadcasts and system notices: nothing is waiting for them
       }
     } catch (error) {
       logger.error(`Error parsing message: ${error instanceof Error ? error.message : String(error)}`);
@@ -3972,7 +3123,6 @@ function sendCommandToFigma(
 
     // Send the request
     logger.info(`Sending command to Figma: ${command}`);
-    logger.debug(`Request details: ${JSON.stringify(request)}`);
     ws.send(JSON.stringify(request));
   });
 }
@@ -4059,15 +3209,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting image fill: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error setting image fill: `, error);
     }
   }
 );
@@ -4107,14 +3249,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting component description: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error setting component description: `, error);
     }
   }
 );
@@ -4157,14 +3292,7 @@ server.tool(
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error in grid_layout: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error in grid_layout: `, error);
     }
   }
 );
@@ -4195,16 +3323,9 @@ server.tool(
   async ({ items, dryRun }: any) => {
     try {
       const result = await sendCommandToFigma("set_constraints", { items, dryRun });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error in set_constraints: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error in set_constraints: `, error);
     }
   }
 );
@@ -4230,15 +3351,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error renaming node: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error renaming node: `, error);
     }
   }
 );
@@ -4254,16 +3367,9 @@ server.tool(
   async ({ nodeIds, dryRun }: any) => {
     try {
       const result = await sendCommandToFigma("reset_instance_overrides", { nodeIds, dryRun }, 300000);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error in reset_instance_overrides: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-      };
+      return errorResult(`Error in reset_instance_overrides: `, error);
     }
   }
 );
@@ -4298,15 +3404,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error creating section: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error creating section: `, error);
     }
   }
 );
@@ -4351,15 +3449,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error setting parent: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error setting parent: `, error);
     }
   }
 );
@@ -4399,15 +3489,7 @@ server.tool(
         ],
       };
     } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error joining channel: ${error instanceof Error ? error.message : String(error)
-              }`,
-          },
-        ],
-      };
+      return errorResult(`Error joining channel: `, error);
     }
   }
 );
@@ -4422,11 +3504,9 @@ server.tool(
   async ({ nodeIds }: any) => {
     try {
       const result = await sendCommandToFigma("get_vector_paths", { nodeIds }, 60000);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error getting vector paths: ${error instanceof Error ? error.message : String(error)}` }],
-      };
+      return errorResult(`Error getting vector paths: `, error);
     }
   }
 );
@@ -4450,11 +3530,9 @@ server.tool(
   async ({ nodeId, vectorPaths }: any) => {
     try {
       const result = await sendCommandToFigma("set_vector_paths", { nodeId, vectorPaths });
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error setting vector paths: ${error instanceof Error ? error.message : String(error)}` }],
-      };
+      return errorResult(`Error setting vector paths: `, error);
     }
   }
 );
@@ -4481,11 +3559,9 @@ server.tool(
       }
       if (!markup) throw new Error("Provide svg or svgPath");
       const result = await sendCommandToFigma("create_vector_from_svg", { svg: markup, parentId, x, y, name, flatten }, 60000);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error creating vector from SVG: ${error instanceof Error ? error.message : String(error)}` }],
-      };
+      return errorResult(`Error creating vector from SVG: `, error);
     }
   }
 );
@@ -4506,11 +3582,9 @@ server.tool(
   async (params: any) => {
     try {
       const result = await sendCommandToFigma("set_text_style", params);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error setting text style: ${error instanceof Error ? error.message : String(error)}` }],
-      };
+      return errorResult(`Error setting text style: `, error);
     }
   }
 );
@@ -4530,11 +3604,9 @@ server.tool(
   async (params: any) => {
     try {
       const result = await sendCommandToFigma("set_stroke_style", params, 60000);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return jsonResult(result);
     } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error setting stroke style: ${error instanceof Error ? error.message : String(error)}` }],
-      };
+      return errorResult(`Error setting stroke style: `, error);
     }
   }
 );
@@ -4543,15 +3615,9 @@ server.tool(
 function jsonToolHandler(command: FigmaCommand, label: string) {
   return async (params: any) => {
     try {
-      const result = await sendCommandToFigma(command, params, 60000);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      return jsonResult(await sendCommandToFigma(command, params, 60000));
     } catch (error) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Error ${label}: ${error instanceof Error ? error.message : String(error)}`,
-        }],
-      };
+      return errorResult(`Error ${label}: `, error);
     }
   };
 }
@@ -4597,6 +3663,19 @@ server.tool(
     children: z.boolean().optional().describe("Also describe direct children (default true)"),
   },
   jsonToolHandler("get_variable_modes", "getting variable modes")
+);
+
+server.tool(
+  "find_mode_usage",
+  "Read-only. Find where a variable collection (e.g. 'resolution') is used, at any depth: nodes with an explicit mode set for it (pages included) and nodes whose fields or component properties are bound to its variables. Collections whose name cannot be read (deleted or unavailable library) are kept by id and marked unresolved. Scope with pageName or nodeId (default: current page).",
+  {
+    collection: z.string().optional().describe("Collection name or id substring; omit to report every collection"),
+    pageName: z.string().optional().describe("Page to scan, exact name"),
+    nodeId: z.string().optional().describe("Limit the scan to this node and its children"),
+    includeBindings: z.boolean().optional().describe("Also report variable bindings (default true)"),
+    limit: z.number().optional().describe("Max nodes listed per section (default 300); totals are always full"),
+  },
+  jsonToolHandler("find_mode_usage", "finding variable mode usage")
 );
 
 server.tool(

@@ -1,874 +1,413 @@
 <!DOCTYPE html>
-<html>
+<html lang="ko">
   <head>
     <meta charset="utf-8" />
     <title>Talk to Figma MCP</title>
     <style>
+      /* 피그마 테마 색(themeColors: true)을 따르고, 없으면 다크 기본값 */
+      :root {
+        --bg: var(--figma-color-bg, #1e1e1e);
+        --bg2: var(--figma-color-bg-secondary, #2c2c2c);
+        --text: var(--figma-color-text, #e6e6e6);
+        --text2: var(--figma-color-text-secondary, #a0a0a0);
+        --border: var(--figma-color-border, #3d3d3d);
+        --brand: var(--figma-color-bg-brand, #0d99ff);
+        --on-brand: var(--figma-color-text-onbrand, #ffffff);
+        --ok: var(--figma-color-text-success, #3dd68c);
+        --bad: var(--figma-color-text-danger, #ff6b6b);
+        --warn: var(--figma-color-text-warning, #f5b740);
+      }
+      * { box-sizing: border-box; }
       body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          Helvetica, Arial, sans-serif;
         margin: 0;
-        padding: 20px;
-        color: #e0e0e0;
-        background-color: #1e1e1e;
+        padding: 12px;
+        font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", sans-serif;
+        color: var(--text);
+        background: var(--bg);
       }
+      .file { margin-bottom: 10px; }
+      .file-name { font-size: 14px; font-weight: 600; word-break: break-all; }
+      .file-page { color: var(--text2); margin-top: 2px; }
 
-      .container {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-      }
-
-      h1 {
-        font-size: 16px;
-        font-weight: 600;
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
         margin-bottom: 10px;
-        color: #ffffff;
+        background: var(--bg2);
       }
+      .status-line { display: flex; align-items: center; gap: 6px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); flex: none; }
+      .dot.on { background: var(--ok); }
+      .dot.wait { background: var(--warn); }
+      .status-text { flex: 1; }
 
-      h2 {
-        font-size: 14px;
-        font-weight: 600;
-        margin-top: 20px;
-        margin-bottom: 8px;
-        color: #ffffff;
+      .channel-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+      .channel {
+        flex: 1;
+        font: 600 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: 1px;
+        user-select: all;
       }
+      .hint { color: var(--text2); margin-top: 6px; }
+      .hint code { font-family: ui-monospace, Menlo, monospace; }
 
       button {
-        background-color: #18a0fb;
+        font: inherit;
         border: none;
-        color: white;
-        padding: 8px 12px;
         border-radius: 6px;
-        margin-top: 8px;
-        margin-bottom: 8px;
+        padding: 6px 10px;
         cursor: pointer;
-        font-size: 14px;
-        transition: background-color 0.2s;
+        background: var(--brand);
+        color: var(--on-brand);
       }
+      button.ghost { background: transparent; color: var(--text2); border: 1px solid var(--border); }
+      button:disabled { opacity: 0.4; cursor: default; }
 
-      button:hover {
-        background-color: #0d8ee0;
-      }
-
-      button.secondary {
-        background-color: #3d3d3d;
-        color: #e0e0e0;
-      }
-
-      button.secondary:hover {
-        background-color: #4d4d4d;
-      }
-
-      button:disabled {
-        background-color: #333333;
-        color: #666666;
-        cursor: not-allowed;
-      }
-
-      input {
-        border: 1px solid #444444;
-        border-radius: 4px;
-        padding: 8px;
-        margin-bottom: 12px;
-        font-size: 14px;
-        width: 100%;
-        box-sizing: border-box;
-        background-color: #2d2d2d;
-        color: #e0e0e0;
-      }
-
-      label {
-        display: block;
-        margin-bottom: 4px;
-        font-size: 12px;
-        font-weight: 500;
-        color: #cccccc;
-      }
-
-      .status {
-        margin-top: 16px;
-        padding: 12px;
+      .controls { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+      .controls input {
+        width: 64px;
+        font: inherit;
+        padding: 5px 6px;
+        border: 1px solid var(--border);
         border-radius: 6px;
-        font-size: 14px;
+        background: var(--bg);
+        color: var(--text);
       }
+      .controls label { color: var(--text2); }
+      .spacer { flex: 1; }
 
-      .status.connected {
-        background-color: #1a472a;
-        color: #4ade80;
-      }
+      .progress { margin-top: 8px; }
+      .bar { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 4px; }
+      .bar > div { height: 100%; width: 0; background: var(--brand); transition: width 0.3s; }
 
-      .status.disconnected {
-        background-color: #471a1a;
-        color: #ff9999;
+      .log-head { display: flex; justify-content: space-between; color: var(--text2); margin-bottom: 4px; }
+      .log { list-style: none; margin: 0; padding: 0; }
+      .log li {
+        display: grid;
+        grid-template-columns: 14px 1fr auto;
+        gap: 6px;
+        padding: 3px 0;
+        border-top: 1px solid var(--border);
       }
-
-      .status.info {
-        background-color: #1a3147;
-        color: #66b3ff;
-      }
-
-      .toggle-container {
-        display: flex;
-        align-items: center;
-        margin-bottom: 12px;
-      }
-
-      .toggle-switch {
-        position: relative;
-        display: inline-block;
-        width: 40px;
-        height: 20px;
-        margin-right: 8px;
-      }
-
-      .toggle-switch input {
-        opacity: 0;
-        width: 0;
-        height: 0;
-        margin: 0;
-      }
-
-      .toggle-slider {
-        position: absolute;
-        cursor: pointer;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background-color: #444444;
-        transition: 0.4s;
-        border-radius: 20px;
-      }
-
-      .toggle-slider:before {
-        position: absolute;
-        content: "";
-        height: 16px;
-        width: 16px;
-        left: 2px;
-        bottom: 2px;
-        background-color: white;
-        transition: 0.4s;
-        border-radius: 50%;
-      }
-
-      input:checked + .toggle-slider {
-        background-color: #18a0fb;
-      }
-
-      input:checked + .toggle-slider:before {
-        transform: translateX(20px);
-      }
-
-      .section {
-        margin-bottom: 24px;
-      }
-
-      .hidden {
-        display: none;
-      }
-
-      .logo {
-        width: 50px;
-        height: 50px;
-      }
-
-      .header {
-        display: flex;
-        align-items: center;
-        margin-bottom: 16px;
-      }
-
-      .header-text {
-        margin-left: 12px;
-      }
-
-      .header-text h1 {
-        margin: 0;
-        font-size: 16px;
-      }
-
-      .header-text p {
-        margin: 4px 0 0 0;
-        font-size: 12px;
-        color: #999999;
-      }
-
-      .tabs {
-        display: flex;
-        border-bottom: 1px solid #444444;
-        margin-bottom: 16px;
-      }
-
-      .tab {
-        padding: 8px 16px;
-        cursor: pointer;
-        font-size: 14px;
-        font-weight: 500;
-        color: #999999;
-      }
-
-      .tab.active {
-        border-bottom: 2px solid #18a0fb;
-        color: #18a0fb;
-      }
-
-      .tab-content {
-        display: none;
-      }
-
-      .tab-content.active {
-        display: block;
-      }
-
-      .link {
-        color: #18a0fb;
-        text-decoration: none;
-        cursor: pointer;
-      }
-
-      .link:hover {
-        text-decoration: underline;
-      }
-
-      .header-logo {
-        padding: 16px;
-        border-radius: 16px;
-        background-color: #333;
-      }
-
-      .header-logo-image {
-        width: 24px;
-        height: 24px;
-        object-fit: contain;
-      }
-      /* Progress styles */
-      .operation-complete {
-        color: #4ade80;
-      }
-      .operation-error {
-        color: #ff9999;
-      }
+      .log li:first-child { border-top: none; }
+      .log .mark.ok { color: var(--ok); }
+      .log .mark.bad { color: var(--bad); }
+      .log .mark.run { color: var(--warn); }
+      .log .cmd { font-family: ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .log .ms { color: var(--text2); }
+      .log .err { grid-column: 2 / 4; color: var(--bad); word-break: break-all; }
+      .empty { color: var(--text2); }
+      .hidden { display: none !important; }
     </style>
   </head>
-
   <body>
-    <div class="container">
-      <div class="header">
-        <div class="header-text">
-          <h1>Talk To Figma MCP Plugin</h1>
-          <p>Claude Code 와 피그마를 MCP 로 연결합니다</p>
-        </div>
+    <div class="file">
+      <div class="file-name" id="file-name">파일 확인 중…</div>
+      <div class="file-page" id="file-page"></div>
+    </div>
+
+    <div class="card">
+      <div class="status-line">
+        <span class="dot" id="dot"></span>
+        <span class="status-text" id="status">연결되지 않음</span>
       </div>
-
-      <div class="tabs">
-        <div id="tab-connection" class="tab active">Connection</div>
-        <div id="tab-about" class="tab">About</div>
+      <div class="channel-row">
+        <span class="channel" id="channel">--------</span>
+        <button id="btn-copy" disabled>복사</button>
       </div>
-
-      <div id="content-connection" class="tab-content active">
-        <div class="section">
-          <div style="margin-bottom: 16px">
-            <button id="btn-connect" class="primary" style="width: 100%">
-              Connect
-            </button>
-          </div>
-
-          <div id="port-container">
-            <label for="port">WebSocket Server Port</label>
-            <input
-              type="number"
-              id="port"
-              placeholder="3055"
-              value="3055"
-              min="1024"
-              max="65535"
-            />
-          </div>
-        </div>
-
-        <div id="connection-status" class="status disconnected">
-          MCP 중계 서버에 연결되지 않음
-        </div>
-
-        <div id="mcp-config" class="section hidden">
-          <h2>MCP Configuration</h2>
-          <p>
-            Claude Code 의 <code>.mcp.json</code> 에 넣을 설정
-            (경로는 저장소 위치로 바꾼다):
-          </p>
-          <textarea
-            id="mcp-json"
-            rows="5"
-            readonly
-            style="
-              width: 100%;
-              background: #2d2d2d;
-              color: #e0e0e0;
-              padding: 12px;
-              border: 1px solid #444444;
-              border-radius: 4px;
-              font-family: monospace;
-              margin-bottom: 8px;
-            "
-          ></textarea>
-          <button id="btn-copy" class="secondary">Copy to Clipboard</button>
-        </div>
-
-        <!-- Add Progress Bar Section -->
-        <div id="progress-container" class="section hidden">
-          <h2>Operation Progress</h2>
-          <div id="progress-message">No operation in progress</div>
-          <div
-            style="
-              width: 100%;
-              background-color: #444;
-              border-radius: 4px;
-              margin-top: 8px;
-            "
-          >
-            <div
-              id="progress-bar"
-              style="
-                width: 0%;
-                height: 8px;
-                background-color: #18a0fb;
-                border-radius: 4px;
-                transition: width 0.3s;
-              "
-            ></div>
-          </div>
-          <div
-            style="
-              display: flex;
-              justify-content: space-between;
-              margin-top: 4px;
-              font-size: 12px;
-            "
-          >
-            <div id="progress-status">Not started</div>
-            <div id="progress-percentage">0%</div>
-          </div>
-        </div>
+      <div class="hint" id="hint">Claude Code 에 붙여 넣으면 접속합니다.</div>
+      <div class="controls">
+        <button id="btn-connect">연결</button>
+        <span class="spacer"></span>
+        <label for="port">포트</label>
+        <input type="number" id="port" value="3055" min="1024" max="65535" />
       </div>
-
-      <div id="content-about" class="tab-content">
-        <div class="section">
-          <h2>About Talk To Figma Plugin</h2>
-          <p>
-            Claude Code 가 MCP 로 피그마를 읽고 고칠 수 있게 하는 플러그인입니다.
-            <a
-              class="link"
-              onclick="window.open(`https://github.com/qwert122345/cursor-talk-to-figma-mcp`, '_blank')"
-              >Github</a
-            >
-          </p>
-          <p>Version: 1.1.0</p>
-
-          <h2>How to Use</h2>
-          <ol>
-            <li>저장소에서 <code>bun socket</code> 으로 중계 서버를 켠다</li>
-            <li>포트(기본 3055)로 연결하고 채널 ID 를 Claude Code 에 알려 준다</li>
-            <li>연결되면 Claude Code 에서 도구로 피그마를 다룬다</li>
-          </ol>
-          <p style="font-size: 11px; color: #888; margin-top: 16px;">
-            Usage analytics are disabled in this build. The plugin talks only to the local MCP relay on localhost.
-          </p>
-        </div>
+      <div class="progress hidden" id="progress">
+        <div id="progress-message"></div>
+        <div class="bar"><div id="progress-bar"></div></div>
       </div>
     </div>
 
+    <div class="card">
+      <div class="log-head"><span>최근 명령</span><span id="log-count"></span></div>
+      <ul class="log" id="log"></ul>
+      <div class="empty" id="log-empty">아직 받은 명령이 없습니다.</div>
+    </div>
+
     <script>
-      // WebSocket connection state
       const state = {
         connected: false,
         socket: null,
         serverPort: 3055,
-        pendingRequests: new Map(),
         channel: null,
-        commandTracking: new Map(),
+        pendingRequests: new Map(),
+        activeRequestId: null,
       };
 
-      // --- Anonymous analytics: removed in this fork ---
-      // ponytail: no-op stub. The GA4 endpoint, its credentials and the domain in
-      // manifest.json are all gone; call sites stay so this is one hunk to revert.
-      const analytics = { track() {}, setClientId() {} };
-      analytics.track("plugin_open");
+      const $ = (id) => document.getElementById(id);
+      const portInput = $("port");
+      const connectButton = $("btn-connect");
 
-      // UI Elements
-      const portInput = document.getElementById("port");
-      const connectButton = document.getElementById("btn-connect");
-      const connectionStatus = document.getElementById("connection-status");
-
-      // Tabs
-      const tabs = document.querySelectorAll(".tab");
-      const tabContents = document.querySelectorAll(".tab-content");
-
-      // Add UI elements for progress tracking
-      const progressContainer = document.getElementById("progress-container");
-      const progressBar = document.getElementById("progress-bar");
-      const progressMessage = document.getElementById("progress-message");
-      const progressStatus = document.getElementById("progress-status");
-      const progressPercentage = document.getElementById("progress-percentage");
-
-      // Initialize UI
-      function updateConnectionStatus(isConnected, message) {
-        state.connected = isConnected;
-
-        let statusMessage =
-          message ||
-          (isConnected
-            ? "MCP 중계 서버에 연결됨"
-            : "MCP 중계 서버에 연결되지 않음");
-
-        // Add instructions for localhost when disconnected
-        if (!isConnected) {
-          statusMessage += `<br><br>저장소에서 중계 서버를 켠 뒤 연결하세요<br><code>bun socket</code>`;
-        }
-
-        connectionStatus.innerHTML = statusMessage;
-        connectionStatus.className = `status ${
-          isConnected ? "connected" : "disconnected"
-        }`;
-
-        // Update connect button text and style based on connection state
-        connectButton.textContent = isConnected ? "Disconnect" : "Connect";
-        connectButton.className = isConnected ? "secondary" : "primary";
-        portInput.disabled = isConnected;
-
-        // Show/hide MCP config section
-        const mcpConfig = document.getElementById("mcp-config");
-        mcpConfig.className = `section ${isConnected ? "" : "hidden"}`;
-
-        // Update MCP config text when showing
-        if (isConnected) {
-          updateMcpConfig();
-        }
+      function toPlugin(msg) {
+        parent.postMessage({ pluginMessage: msg }, "*");
       }
 
-      // Connect to WebSocket server
-      async function connectToServer(port) {
+      // ---------- 연결 상태 표시 ----------
+      function setStatus(kind, text) {
+        // kind: on | wait | off
+        state.connected = kind === "on";
+        $("dot").className = "dot" + (kind === "on" ? " on" : kind === "wait" ? " wait" : "");
+        $("status").textContent = text;
+        $("btn-copy").disabled = kind !== "on";
+        connectButton.textContent = kind === "off" ? "연결" : "연결 끊기";
+        portInput.disabled = kind !== "off";
+        $("hint").innerHTML =
+          kind === "off"
+            ? "중계 서버가 꺼져 있으면 터미널에서 <code>talk-to-figma-socket</code> 을 실행하세요."
+            : "Claude Code 에 붙여 넣으면 접속합니다.";
+      }
+
+      function randomChannel() {
+        const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let s = "";
+        for (let i = 0; i < 8; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
+        return s;
+      }
+
+      function showChannel() {
+        $("channel").textContent = state.channel || "--------";
+      }
+
+      // ---------- WebSocket ----------
+      function connectToServer(port) {
+        if (state.socket) return;
+        // 연결할 때마다 새 채널 — 파일 두 개가 같은 채널에 붙는 일을 막는다
+        state.channel = randomChannel();
+        showChannel();
+        state.serverPort = port;
+        setStatus("wait", "연결 중…");
+        let socket;
         try {
-          if (state.connected && state.socket) {
-            updateConnectionStatus(true, "Already connected to server");
+          socket = new WebSocket(`ws://localhost:${port}`);
+        } catch (e) {
+          setStatus("off", "연결 실패: " + (e && e.message ? e.message : e));
+          return;
+        }
+        state.socket = socket;
+
+        socket.onopen = () => {
+          socket.send(JSON.stringify({ type: "join", channel: state.channel }));
+        };
+
+        socket.onmessage = (event) => {
+          let data;
+          try {
+            data = JSON.parse(event.data);
+          } catch (e) {
+            console.error("메시지 해석 실패:", e);
             return;
           }
+          if (data.type === "system" && data.message && data.message.result) {
+            setStatus("on", `연결됨 · 포트 ${port}`);
+            toPlugin({ type: "notify", message: `Talk to Figma 연결됨 (채널 ${state.channel})` });
+          } else if (data.type === "error") {
+            setStatus("off", "오류: " + data.message);
+            socket.close();
+          }
+          handleSocketMessage(data);
+        };
 
-          state.serverPort = port;
-          const wsUrl = `ws://localhost:${port}`;
+        socket.onclose = () => {
+          if (state.socket === socket) state.socket = null;
+          setStatus("off", "연결되지 않음");
+        };
 
-          state.socket = new WebSocket(wsUrl);
-
-          state.socket.onopen = () => {
-            // Generate random channel name
-            const channelName = generateChannelName();
-            console.log("Joining channel:", channelName);
-            state.channel = channelName;
-
-            // Join the channel using the same format as App.tsx
-            state.socket.send(
-              JSON.stringify({
-                type: "join",
-                channel: channelName.trim(),
-              })
-            );
-          };
-
-          state.socket.onmessage = (event) => {
-            try {
-              const data = JSON.parse(event.data);
-              console.log("Received message:", data);
-
-              if (data.type === "system") {
-                // Successfully joined channel
-                if (data.message && data.message.result) {
-                  state.connected = true;
-                  const channelName = data.channel;
-                  updateConnectionStatus(
-                    true,
-                    `Connected to server in channel: <strong>${channelName}</strong>`
-                  );
-                  analytics.track("channel_join", {
-                    port: state.serverPort,
-                    channel: channelName,
-                  });
-
-                  // Notify the plugin code
-                  parent.postMessage(
-                    {
-                      pluginMessage: {
-                        type: "notify",
-                        message: `MCP 중계 서버 연결됨 (포트 ${port}, 채널: ${channelName})`,
-                      },
-                    },
-                    "*"
-                  );
-                }
-              } else if (data.type === "error") {
-                console.error("Error:", data.message);
-                updateConnectionStatus(false, `Error: ${data.message}`);
-                state.socket.close();
-              }
-
-              handleSocketMessage(data);
-            } catch (error) {
-              console.error("Error parsing message:", error);
-            }
-          };
-
-          state.socket.onclose = () => {
-            state.connected = false;
-            state.socket = null;
-            updateConnectionStatus(false, "Disconnected from server");
-          };
-
-          state.socket.onerror = (error) => {
-            console.error("WebSocket error:", error);
-            updateConnectionStatus(false, "Connection error");
-            state.connected = false;
-            state.socket = null;
-          };
-        } catch (error) {
-          console.error("Connection error:", error);
-          updateConnectionStatus(
-            false,
-            `Connection error: ${error.message || "Unknown error"}`
-          );
-        }
+        socket.onerror = () => {
+          setStatus("off", "중계 서버에 연결할 수 없음");
+        };
       }
 
-      // Disconnect from websocket server
       function disconnectFromServer() {
         if (state.socket) {
-          state.socket.close();
+          const s = state.socket;
           state.socket = null;
-          state.connected = false;
-          updateConnectionStatus(false, "Disconnected from server");
+          s.close();
         }
+        setStatus("off", "연결되지 않음");
       }
 
-      // Handle messages from the WebSocket
-      async function handleSocketMessage(payload) {
-        const data = payload.message;
-        console.log("handleSocketMessage", data);
+      function send(payload) {
+        if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return false;
+        state.socket.send(JSON.stringify(payload));
+        return true;
+      }
 
-        // If it's a response to a previous request
+      function handleSocketMessage(payload) {
+        const data = payload.message;
+        if (!data) return;
+
         if (data.id && state.pendingRequests.has(data.id)) {
           const { resolve, reject } = state.pendingRequests.get(data.id);
           state.pendingRequests.delete(data.id);
-
-          if (data.error) {
-            reject(new Error(data.error));
-          } else {
-            resolve(data.result);
-          }
+          data.error ? reject(new Error(data.error)) : resolve(data.result);
           return;
         }
 
-        // If it's a new command
         if (data.command) {
-          try {
-            state.activeRequestId = data.id;
-            state.commandTracking.set(data.id, {
-              command: data.command,
-              startedAt: Date.now(),
-            });
-
-            // Send the command to the plugin code
-            parent.postMessage(
-              {
-                pluginMessage: {
-                  type: "execute-command",
-                  id: data.id,
-                  command: data.command,
-                  params: data.params,
-                },
-              },
-              "*"
-            );
-          } catch (error) {
-            // Send error back to WebSocket
-            sendErrorResponse(
-              data.id,
-              error.message || "Error executing command"
-            );
-          }
+          state.activeRequestId = data.id;
+          logStart(data.id, data.command);
+          toPlugin({ type: "execute-command", id: data.id, command: data.command, params: data.params });
         }
       }
 
-      function trackCommandResult(id, success, errorMessage) {
-        const meta = state.commandTracking.get(id);
-        if (!meta) return;
-        state.commandTracking.delete(id);
-        const params = {
-          command_name: String(meta.command || "unknown"),
-          success: success ? 1 : 0,
-          duration_ms: Date.now() - meta.startedAt,
-        };
-        if (!success && errorMessage) {
-          params.error_message = String(errorMessage).slice(0, 100);
-        }
-        analytics.track("command_executed", params);
-      }
-
-      // Send a command to the WebSocket server
-      async function sendCommand(command, params) {
-        return new Promise((resolve, reject) => {
-          if (!state.connected || !state.socket) {
-            reject(new Error("Not connected to server"));
-            return;
-          }
-
-          const id = generateId();
-          state.pendingRequests.set(id, { resolve, reject });
-
-          state.socket.send(
-            JSON.stringify({
-              id,
-              type: "message",
-              channel: state.channel,
-              message: {
-                id,
-                command,
-                params,
-              },
-            })
-          );
-
-          // Set timeout to reject the promise after 30 seconds
-          setTimeout(() => {
-            if (state.pendingRequests.has(id)) {
-              state.pendingRequests.delete(id);
-              reject(new Error("Request timed out"));
-            }
-          }, 30000);
-        });
-      }
-
-      // Send success response back to WebSocket
       function sendSuccessResponse(id, result) {
-        if (!state.connected || !state.socket) {
-          console.error("Cannot send response: socket not connected");
-          return;
-        }
-
-        state.socket.send(
-          JSON.stringify({
-            id,
-            type: "message",
-            channel: state.channel,
-            message: {
-              id,
-              result,
-            },
-          })
-        );
+        send({ id, type: "message", channel: state.channel, message: { id, result } });
       }
 
-      // Send error response back to WebSocket
-      function sendErrorResponse(id, errorMessage) {
-        if (!state.connected || !state.socket) {
-          console.error("Cannot send error response: socket not connected");
-          return;
-        }
-
-        state.socket.send(
-          JSON.stringify({
-            id,
-            type: "message",
-            channel: state.channel,
-            message: {
-              id,
-              error: errorMessage,
-              result: {},
-            },
-          })
-        );
+      function sendErrorResponse(id, error) {
+        send({ id, type: "message", channel: state.channel, message: { id, error, result: {} } });
       }
 
-      // Helper to generate unique IDs
-      function generateId() {
-        return (
-          Date.now().toString(36) + Math.random().toString(36).substr(2, 5)
-        );
-      }
-
-      // Add this function after the generateId() function
-      function generateChannelName() {
-        const characters = "abcdefghijklmnopqrstuvwxyz0123456789";
-        let result = "";
-        for (let i = 0; i < 8; i++) {
-          result += characters.charAt(
-            Math.floor(Math.random() * characters.length)
-          );
-        }
-        return result;
-      }
-
-      // Tab switching
-      tabs.forEach((tab) => {
-        tab.addEventListener("click", () => {
-          tabs.forEach((t) => t.classList.remove("active"));
-          tabContents.forEach((c) => c.classList.remove("active"));
-
-          tab.classList.add("active");
-          const contentId = "content-" + tab.id.split("-")[1];
-          document.getElementById(contentId).classList.add("active");
-        });
-      });
-
-      // Replace the separate connect/disconnect button listeners with a single toggle
-      connectButton.addEventListener("click", () => {
-        if (state.connected) {
-          updateConnectionStatus(false, "Disconnecting...");
-          connectionStatus.className = "status info";
-          disconnectFromServer();
-        } else {
-          const port = parseInt(portInput.value, 10) || 3055;
-          updateConnectionStatus(false, "Connecting...");
-          connectionStatus.className = "status info";
-          connectToServer(port);
-        }
-      });
-
-      // Function to update progress UI
-      function updateProgressUI(progressData) {
-        // Show progress container if hidden
-        progressContainer.classList.remove("hidden");
-
-        // Update progress bar
-        const progress = progressData.progress || 0;
-        progressBar.style.width = `${progress}%`;
-        progressPercentage.textContent = `${progress}%`;
-
-        // Update message
-        progressMessage.textContent =
-          progressData.message || "Operation in progress";
-
-        // Update status text based on operation state
-        if (progressData.status === "started") {
-          progressStatus.textContent = "Started";
-          progressStatus.className = "";
-        } else if (progressData.status === "in_progress") {
-          progressStatus.textContent = "In Progress";
-          progressStatus.className = "";
-        } else if (progressData.status === "completed") {
-          progressStatus.textContent = "Completed";
-          progressStatus.className = "operation-complete";
-
-          // Hide progress container after 5 seconds
-          setTimeout(() => {
-            progressContainer.classList.add("hidden");
-          }, 5000);
-        } else if (progressData.status === "error") {
-          progressStatus.textContent = "Error";
-          progressStatus.className = "operation-error";
-        }
-      }
-
-      // Send operation progress update to server
       function sendProgressUpdateToServer(progressData) {
-        if (!state.connected || !state.socket) {
-          console.error("Cannot send progress update: socket not connected");
-          return;
+        const id = state.activeRequestId || progressData.commandId;
+        send({
+          id,
+          type: "progress_update",
+          channel: state.channel,
+          message: { id, type: "progress_update", data: progressData },
+        });
+      }
+
+      // ---------- 진행 표시 ----------
+      let progressHideTimer = null;
+      function updateProgressUI(p) {
+        clearTimeout(progressHideTimer);
+        $("progress").classList.remove("hidden");
+        const pct = Math.max(0, Math.min(100, p.progress || 0));
+        $("progress-bar").style.width = pct + "%";
+        $("progress-message").textContent = `${p.message || "진행 중"} (${pct}%)`;
+        if (p.status === "completed" || p.status === "error") {
+          progressHideTimer = setTimeout(() => $("progress").classList.add("hidden"), 4000);
         }
-
-        console.log("Sending progress update to server:", progressData);
-
-        const requestId = state.activeRequestId || progressData.commandId;
-        state.socket.send(
-          JSON.stringify({
-            id: requestId,
-            type: "progress_update",
-            channel: state.channel,
-            message: {
-              id: requestId,
-              type: "progress_update",
-              data: progressData,
-            },
-          })
-        );
       }
 
-      // Reset progress UI
-      function resetProgressUI() {
-        progressContainer.classList.add("hidden");
-        progressBar.style.width = "0%";
-        progressMessage.textContent = "No operation in progress";
-        progressStatus.textContent = "Not started";
-        progressStatus.className = "";
-        progressPercentage.textContent = "0%";
+      // ---------- 최근 명령 기록 ----------
+      const LOG_MAX = 20;
+      const log = []; // 최신이 앞
+
+      function logStart(id, command) {
+        log.unshift({ id, command, start: Date.now(), end: null, ok: null, error: null });
+        if (log.length > LOG_MAX) log.length = LOG_MAX;
+        renderLog();
       }
 
-      // Listen for messages from the plugin code
+      function logEnd(id, ok, error) {
+        const e = log.find((x) => x.id === id);
+        if (!e) return;
+        e.end = Date.now();
+        e.ok = ok;
+        e.error = error || null;
+        renderLog();
+      }
+
+      function fmtMs(ms) {
+        return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+      }
+
+      function renderLog() {
+        const ul = $("log");
+        ul.textContent = "";
+        $("log-empty").classList.toggle("hidden", log.length > 0);
+        const fails = log.filter((x) => x.ok === false).length;
+        $("log-count").textContent = log.length ? `${log.length}개${fails ? ` · 실패 ${fails}` : ""}` : "";
+        const now = Date.now();
+        for (const e of log) {
+          const li = document.createElement("li");
+          const mark = document.createElement("span");
+          mark.className = "mark " + (e.ok === null ? "run" : e.ok ? "ok" : "bad");
+          mark.textContent = e.ok === null ? "…" : e.ok ? "✓" : "✕";
+          const cmd = document.createElement("span");
+          cmd.className = "cmd";
+          cmd.textContent = e.command;
+          cmd.title = e.command;
+          const ms = document.createElement("span");
+          ms.className = "ms";
+          ms.textContent = fmtMs((e.end || now) - e.start) + (e.ok === null ? " 진행 중" : "");
+          li.append(mark, cmd, ms);
+          if (e.error) {
+            const err = document.createElement("span");
+            err.className = "err";
+            err.textContent = e.error.length > 160 ? e.error.slice(0, 160) + "…" : e.error;
+            err.title = e.error;
+            li.append(err);
+          }
+          ul.append(li);
+        }
+      }
+
+      // 진행 중인 명령의 경과 시간을 갱신 — 멈춘 명령이 보이게
+      setInterval(() => {
+        if (log.some((x) => x.ok === null)) renderLog();
+      }, 1000);
+
+      // ---------- 버튼 ----------
+      connectButton.addEventListener("click", () => {
+        if (state.socket) disconnectFromServer();
+        else connectToServer(parseInt(portInput.value, 10) || 3055);
+      });
+
+      $("btn-copy").addEventListener("click", () => {
+        // Claude Code 에 그대로 붙여 넣는 문장
+        const text = `${state.channel} 채널.`;
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.append(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        const b = $("btn-copy");
+        b.textContent = "복사됨";
+        setTimeout(() => (b.textContent = "복사"), 1500);
+      });
+
+      // ---------- 플러그인 본체(code.js)에서 오는 메시지 ----------
       window.onmessage = (event) => {
         const message = event.data.pluginMessage;
         if (!message) return;
-
-        console.log("Received message from plugin:", message);
-
         switch (message.type) {
-          case "connection-status":
-            updateConnectionStatus(message.connected, message.message);
+          case "file-info":
+            $("file-name").textContent = message.fileName || "(이름 없는 파일)";
+            $("file-page").textContent = message.pageName ? `현재 페이지 · ${message.pageName}` : "";
+            break;
+          case "init-settings":
+            if (message.settings && message.settings.serverPort && !state.socket) {
+              portInput.value = message.settings.serverPort;
+            }
             break;
           case "auto-connect":
-            connectButton.click();
+            if (!state.socket) connectButton.click();
             break;
           case "auto-disconnect":
-            connectButton.click();
+            if (state.socket) connectButton.click();
             break;
           case "command-result":
-            // Forward the result from plugin code back to WebSocket
             sendSuccessResponse(message.id, message.result);
-            trackCommandResult(message.id, true);
+            logEnd(message.id, true);
             break;
           case "command-error":
-            // Forward the error from plugin code back to WebSocket
             sendErrorResponse(message.id, message.error);
-            trackCommandResult(message.id, false, message.error);
+            logEnd(message.id, false, message.error);
             break;
           case "command_progress":
-            // Update UI with progress information
             updateProgressUI(message);
-            // Forward progress update to server
             sendProgressUpdateToServer(message);
-            break;
-          case "analytics-client-id":
-            analytics.setClientId(message.clientId);
             break;
         }
       };
 
-      // Add this to the script section, after all the other event listeners
-      document.getElementById("btn-copy").addEventListener("click", () => {
-        const textarea = document.getElementById("mcp-json");
-        textarea.select();
-        document.execCommand("copy");
-        const button = document.getElementById("btn-copy");
-        button.textContent = "Copied!";
-        setTimeout(() => {
-          button.textContent = "Copy to Clipboard";
-        }, 2000);
-      });
-
-      // Add this function to the script section
-      function updateMcpConfig() {
-        const mcpConfig = {
-          mcpServers: {
-            TalkToFigma: {
-              command: "bun",
-              args: ["/절대경로/cursor-talk-to-figma-mcp/dist/server.js"],
-            },
-          },
-        };
-
-        document.getElementById("mcp-json").value = JSON.stringify(
-          mcpConfig,
-          null,
-          2
-        );
-      }
+      setStatus("off", "연결되지 않음");
+      renderLog();
     </script>
   </body>
 </html>

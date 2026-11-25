@@ -22,3 +22,9 @@ cat > .mcp.json <<EOF
 }
 EOF
 echo "✓ Claude Code MCP 설정을 .mcp.json 에 썼습니다 ($ROOT/dist/server.js)"
+
+# 어느 폴더에서든 중계 서버를 켤 수 있게 ~/.local/bin 에 명령을 건다
+chmod +x "$ROOT/src/socket.ts"
+mkdir -p "$HOME/.local/bin"
+ln -sf "$ROOT/src/socket.ts" "$HOME/.local/bin/talk-to-figma-socket"
+echo "✓ 중계 서버 명령: talk-to-figma-socket (~/.local/bin 이 PATH 에 있어야 한다)"

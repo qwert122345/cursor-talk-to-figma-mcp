@@ -54,8 +54,18 @@ async function sendProgressUpdate(
   return update;
 }
 
-// Show UI
-figma.showUI(__html__, { width: 350, height: 600 });
+// Show UI (themeColors: 피그마 라이트/다크 테마 색을 CSS 변수로 받는다)
+figma.showUI(__html__, { width: 320, height: 480, themeColors: true });
+
+function postFileInfo() {
+  figma.ui.postMessage({
+    type: "file-info",
+    fileName: figma.root.name,
+    pageName: figma.currentPage.name,
+  });
+}
+
+figma.on("currentpagechange", postFileInfo);
 
 // Plugin commands from UI
 figma.ui.onmessage = async (msg) => {
@@ -82,7 +92,7 @@ figma.ui.onmessage = async (msg) => {
         figma.ui.postMessage({
           type: "command-error",
           id: msg.id,
-          error: error.message || "Error executing command",
+          error: errMsg(error) || "Error executing command",
         });
       }
       break;
@@ -91,6 +101,7 @@ figma.ui.onmessage = async (msg) => {
 
 // Listen for plugin commands from menu
 figma.on("run", ({ command }) => {
+  postFileInfo();
   figma.ui.postMessage({ type: "auto-connect" });
 });
 
@@ -314,6 +325,8 @@ async function handleCommand(command, params) {
       return await getVariableModes(params);
     case "set_variable_mode":
       return await setVariableMode(params);
+    case "find_mode_usage":
+      return await findModeUsage(params);
     case "set_instance_properties":
       return await setInstanceProperties(params);
     case "clear_fills":
@@ -471,7 +484,7 @@ async function setStrokeStyle(params) {
       if (Array.isArray(dashPattern) && "dashPattern" in node) node.dashPattern = dashPattern;
       results.push({ id, name: node.name, before, after: { strokeJoin: node.strokeJoin, strokeAlign: node.strokeAlign, strokeCap: node.strokeCap, strokeMiterLimit: node.strokeMiterLimit } });
     } catch (e) {
-      results.push({ id, error: e.message });
+      results.push({ id, error: errMsg(e) });
     }
   }
   return { updated: results.filter((r) => !r.error).length, results };
@@ -722,7 +735,7 @@ async function getNodesInfo(nodeIds) {
 
     return responses;
   } catch (error) {
-    throw new Error(`Error getting nodes info: ${error.message}`);
+    throw new Error(`Error getting nodes info: ${errMsg(error)}`);
   }
 }
 
@@ -811,11 +824,11 @@ async function getReactions(nodeIds) {
             node.strokeWeight = originalStrokeWeight;
             node.strokes = originalStrokes;
           } catch (restoreError) {
-            console.error(`Error restoring node stroke: ${restoreError.message}`);
+            console.error(`Error restoring node stroke: ${errMsg(restoreError)}`);
           }
         }, 1500);
       } catch (highlightError) {
-        console.error(`Error highlighting node: ${highlightError.message}`);
+        console.error(`Error highlighting node: ${errMsg(highlightError)}`);
         // Continue even if highlighting fails
       }
     }
@@ -885,7 +898,7 @@ async function getReactions(nodeIds) {
           processedCount / totalCount,
           totalCount,
           processedCount,
-          `Error processing node: ${error.message}`
+          `Error processing node: ${errMsg(error)}`
         );
       }
     }
@@ -907,7 +920,7 @@ async function getReactions(nodeIds) {
       nodes: allResults
     };
   } catch (error) {
-    throw new Error(`Failed to get reactions: ${error.message}`);
+    throw new Error(`Failed to get reactions: ${errMsg(error)}`);
   }
 }
 
@@ -936,7 +949,7 @@ async function readMyDesign() {
 
     return responses;
   } catch (error) {
-    throw new Error(`Error getting nodes info: ${error.message}`);
+    throw new Error(`Error getting nodes info: ${errMsg(error)}`);
   }
 }
 
@@ -1153,7 +1166,7 @@ async function createText(params) {
   try {
     await figma.loadFontAsync(wantedFont);
   } catch (error) {
-    fontFallbackReason = String((error && error.message) || error);
+    fontFallbackReason = errMsg(error);
     appliedFont = { family: "Inter", style: getFontStyle(fontWeight) };
     await figma.loadFontAsync(appliedFont);
   }
@@ -1163,7 +1176,7 @@ async function createText(params) {
   } catch (error) {
     console.error("Error setting font", error);
   }
-  setCharacters(textNode, text);
+  await setCharacters(textNode, text);
 
   // E-7: a fixed width with auto height. resize() alone sets textAutoResize to
   // NONE, which silently clips every multi-line cell, so set HEIGHT after.
@@ -1180,7 +1193,7 @@ async function createText(params) {
       g: parseFloat(fontColor.g) || 0,
       b: parseFloat(fontColor.b) || 0,
     },
-    opacity: parseFloat(fontColor.a) || 1,
+    opacity: fontColor.a === undefined ? 1 : parseFloat(fontColor.a),
   };
   textNode.fills = [paintStyle];
 
@@ -1355,7 +1368,7 @@ async function setImageFill(params) {
     image = figma.createImage(bytes);
   } catch (error) {
     throw new Error(
-      `Figma rejected the image (supported: PNG/JPG/GIF/WEBP up to 4096x4096): ${error.message}`
+      `Figma rejected the image (supported: PNG/JPG/GIF/WEBP up to 4096x4096): ${errMsg(error)}`
     );
   }
 
@@ -1463,7 +1476,7 @@ async function setComponentDescription(params) {
       applied++;
       results.push({ nodeId, name: node.name, ok: true });
     } catch (error) {
-      results.push({ nodeId, ok: false, error: error.message });
+      results.push({ nodeId, ok: false, error: errMsg(error) });
     }
   }
 
@@ -1614,7 +1627,7 @@ async function gridLayout(params) {
             node[key] = props[key];
             set[key] = props[key];
           } catch (e) {
-            skipped.push(key + " (" + e.message + ")");
+            skipped.push(key + " (" + errMsg(e) + ")");
           }
         }
 
@@ -1629,7 +1642,7 @@ async function gridLayout(params) {
           after: readNodeProps(node, GRID_CHILD_KEYS.concat(GRID_FRAME_KEYS)),
         });
       } catch (error) {
-        results.push({ nodeId: targetId, ok: false, error: error.message });
+        results.push({ nodeId: targetId, ok: false, error: errMsg(error) });
       }
     }
 
@@ -1774,7 +1787,7 @@ async function gridLayout(params) {
           after: readNodeProps(child, GRID_CHILD_KEYS),
         });
       } catch (error) {
-        out.push({ nodeId: childId, ok: false, error: error.message });
+        out.push({ nodeId: childId, ok: false, error: errMsg(error) });
       }
     }
 
@@ -1804,7 +1817,7 @@ async function renameNode(params) {
   try {
     node.name = String(name);
   } catch (error) {
-    throw new Error(`Cannot rename node: ${error.message}`);
+    throw new Error(`Cannot rename node: ${errMsg(error)}`);
   }
 
   return {
@@ -2506,7 +2519,7 @@ async function getLocalComponents(params) {
             },
             function (e) {
               c.published = false;
-              c.publishError = String(e && e.message ? e.message : e);
+              c.publishError = errMsg(e);
             }
           );
         })
@@ -2613,7 +2626,7 @@ async function createComponentInstance(params) {
       mainComponentId: mainComponent ? mainComponent.id : undefined,
     };
   } catch (error) {
-    throw new Error(`Error creating component instance: ${error.message}`);
+    throw new Error(`Error creating component instance: ${errMsg(error)}`);
   }
 }
 
@@ -2673,7 +2686,7 @@ async function exportNodeAsImage(params) {
       imageData: base64,
     };
   } catch (error) {
-    throw new Error(`Error exporting node as image: ${error.message}`);
+    throw new Error(`Error exporting node as image: ${errMsg(error)}`);
   }
 }
 function customBase64Encode(bytes) {
@@ -2824,7 +2837,7 @@ async function setTextContent(params) {
       fontName: node.fontName,
     };
   } catch (error) {
-    throw new Error(`Error setting text content: ${error.message}`);
+    throw new Error(`Error setting text content: ${errMsg(error)}`);
   }
 }
 
@@ -2872,7 +2885,7 @@ async function setTextPreservingLinks(node, text) {
       await applyTextSegment(node, i, i + s.characters.length, s, false);
     } catch (e) {
       // e.g. NODE link whose target was deleted: Figma refuses to re-set it
-      droppedLinks.push(`${s.characters} (${e.message})`);
+      droppedLinks.push(`${s.characters} (${errMsg(e)})`);
       continue;
     }
     keptLinks.push(s.characters);
@@ -3252,11 +3265,11 @@ async function scanTextNodes(params) {
         0,
         0,
         0,
-        `Error scanning text nodes: ${error.message}`,
-        { error: error.message }
+        `Error scanning text nodes: ${errMsg(error)}`,
+        { error: errMsg(error) }
       );
 
-      throw new Error(`Error scanning text nodes: ${error.message}`);
+      throw new Error(`Error scanning text nodes: ${errMsg(error)}`);
     }
   }
 
@@ -3347,7 +3360,7 @@ async function scanTextNodes(params) {
             chunkTextNodes.push(textNodeInfo);
           }
         } catch (error) {
-          console.error(`Error processing text node: ${error.message}`);
+          console.error(`Error processing text node: ${errMsg(error)}`);
           // Continue with other nodes
         }
       }
@@ -3778,12 +3791,12 @@ async function setMultipleTextContents(params) {
         };
       } catch (error) {
         console.error(
-          `Error replacing text in node ${replacement.nodeId}: ${error.message}`
+          `Error replacing text in node ${replacement.nodeId}: ${errMsg(error)}`
         );
         return {
           success: false,
           nodeId: replacement.nodeId,
-          error: `Error applying replacement: ${error.message}`,
+          error: `Error applying replacement: ${errMsg(error)}`,
         };
       }
     });
@@ -4058,11 +4071,11 @@ async function setAnnotation(params) {
   } catch (error) {
     console.error("=== setAnnotation Error ===");
     console.error("Error details:", {
-      message: error.message,
+      message: errMsg(error),
       stack: error.stack,
       params: JSON.stringify(params, null, 2),
     });
-    return { success: false, error: error.message };
+    return { success: false, error: errMsg(error) };
   }
 }
 
@@ -4227,12 +4240,12 @@ async function setMultipleAnnotations(params) {
       const errorResult = {
         success: false,
         nodeId: annotation.nodeId,
-        error: error.message,
+        error: errMsg(error),
       };
       results.push(errorResult);
       console.error(`✗ Annotation ${i + 1} failed with error:`, error);
       console.error("Error details:", {
-        message: error.message,
+        message: errMsg(error),
         stack: error.stack,
       });
     }
@@ -4372,11 +4385,11 @@ async function deleteMultipleNodes(params) {
           nodeInfo: nodeInfo,
         };
       } catch (error) {
-        console.error(`Error deleting node ${nodeId}: ${error.message}`);
+        console.error(`Error deleting node ${nodeId}: ${errMsg(error)}`);
         return {
           success: false,
           nodeId: nodeId,
-          error: error.message,
+          error: errMsg(error),
         };
       }
     });
@@ -4529,10 +4542,10 @@ async function getInstanceOverrides(instanceNode = null) {
     return returnData;
   } catch (error) {
     console.error("Error in getInstanceOverrides:", error);
-    figma.notify(`Error: ${error.message}`);
+    figma.notify(`Error: ${errMsg(error)}`);
     return {
       success: false,
-      message: `Error: ${error.message}`
+      message: `Error: ${errMsg(error)}`
     };
   }
 }
@@ -4655,7 +4668,7 @@ async function setInstanceOverrides(targetInstances, sourceResult) {
             success: false,
             instanceId: targetInstance.id,
             instanceName: targetInstance.name,
-            message: `Error: ${error.message}`
+            message: `Error: ${errMsg(error)}`
           });
         }
 
@@ -4748,7 +4761,7 @@ async function setInstanceOverrides(targetInstances, sourceResult) {
           success: false,
           instanceId: targetInstance.id,
           instanceName: targetInstance.name,
-          message: `Error: ${instanceError.message}`
+          message: `Error: ${errMsg(instanceError)}`
         });
       }
     }
@@ -4772,7 +4785,7 @@ async function setInstanceOverrides(targetInstances, sourceResult) {
 
   } catch (error) {
     console.error("Error in setInstanceOverrides:", error);
-    const message = `Error: ${error.message}`;
+    const message = `Error: ${errMsg(error)}`;
     figma.notify(message);
     return { success: false, message };
   }
@@ -5029,7 +5042,7 @@ async function setMultipleLayoutSizing(params) {
         )
       );
     } catch (error) {
-      errors.push({ nodeId: item.nodeId, error: error.message });
+      errors.push({ nodeId: item.nodeId, error: errMsg(error) });
     }
   }
 
@@ -5094,7 +5107,7 @@ async function setConstraints(params) {
       }
       results.push({ id: node.id, name: node.name, before: before, after: dryRun ? undefined : snap() });
     } catch (error) {
-      results.push({ id: it.nodeId, error: error.message || String(error) });
+      results.push({ id: it.nodeId, error: errMsg(error) });
     }
   }
   return { dryRun: dryRun, results: results };
@@ -5180,7 +5193,7 @@ async function renameVariantProperty(params) {
         properties: after,
       });
     } catch (error) {
-      errors.push({ nodeId: id, error: error.message });
+      errors.push({ nodeId: id, error: errMsg(error) });
     }
   }
 
@@ -5353,7 +5366,7 @@ async function swapInstancesByKey(params) {
         toName: after ? after.name : null,
       });
     } catch (error) {
-      errors.push({ nodeId: id, error: error.message });
+      errors.push({ nodeId: id, error: errMsg(error) });
     }
   }
 
@@ -5393,7 +5406,7 @@ async function renameMultipleNodes(params) {
       node.name = item.name;
       results.push({ id: node.id, previousName, name: node.name });
     } catch (error) {
-      errors.push({ nodeId: item.nodeId, error: error.message });
+      errors.push({ nodeId: item.nodeId, error: errMsg(error) });
     }
   }
 
@@ -5476,7 +5489,7 @@ async function cloneMultipleNodes(params) {
         texts: includeTexts ? collectTexts(clone, []) : undefined,
       });
     } catch (error) {
-      errors.push({ nodeId: item.nodeId, error: error.message });
+      errors.push({ nodeId: item.nodeId, error: errMsg(error) });
     }
   }
 
@@ -5602,11 +5615,11 @@ async function setDefaultConnector(params) {
             console.log(`Stored connector ID ${existingConnectorId} is no longer valid, finding a new connector...`);
           }
         } catch (error) {
-          console.log(`Error finding stored connector: ${error.message}. Will try to set a new one.`);
+          console.log(`Error finding stored connector: ${errMsg(error)}. Will try to set a new one.`);
         }
       }
     } catch (error) {
-      console.log(`Error checking for existing connector: ${error.message}`);
+      console.log(`Error checking for existing connector: ${errMsg(error)}`);
     }
     
     // If there is no stored default connector or it is invalid, find one in the current page
@@ -5634,7 +5647,7 @@ async function setDefaultConnector(params) {
       }
     } catch (error) {
       // Error occurred while running findAllWithCriteria
-      throw new Error(`Failed to find a connector: ${error.message}`);
+      throw new Error(`Failed to find a connector: ${errMsg(error)}`);
     }
   }
 }
@@ -5742,7 +5755,7 @@ async function createCursorNode(targetNodeId) {
     
   } catch (error) {
     console.error("Error creating cursor from SVG:", error);
-    return { id: null, node: null, error: error.message };
+    return { id: null, node: null, error: errMsg(error) };
   }
 }
 
@@ -5861,7 +5874,7 @@ async function createConnections(params) {
                 await figma.loadFontAsync({ family: "System", style: "Regular" });
               } catch (systemFontError) {
                 // If all font loading attempts fail, throw error
-                throw new Error(`Failed to load any font: ${fontError.message}`);
+                throw new Error(`Failed to load any font: ${errMsg(fontError)}`);
               }
             }
           }
@@ -5873,10 +5886,10 @@ async function createConnections(params) {
           // Continue with connection even if text setting fails
           results.push({
             id: clonedConnector.id,
-            startNodeId: startNodeId,
-            endNodeId: endNodeId,
+            startNodeId: originalStartId,
+            endNodeId: originalEndId,
             text: "",
-            textError: textError.message
+            textError: errMsg(textError)
           });
           
           // Continue to next connection
@@ -5917,11 +5930,11 @@ async function createConnections(params) {
         processedCount / totalCount,
         totalCount,
         processedCount,
-        `Error creating connection: ${error.message}`
+        `Error creating connection: ${errMsg(error)}`
       );
       
       results.push({
-        error: error.message,
+        error: errMsg(error),
         connectionInfo: connections[i]
       });
     }
@@ -6388,7 +6401,7 @@ async function setMultipleOpacity(params) {
         opacity: node.opacity,
       });
     } catch (e) {
-      errors.push({ id: nodeIds[i], error: String(e && e.message ? e.message : e) });
+      errors.push({ id: nodeIds[i], error: errMsg(e) });
     }
   }
   return {
@@ -6915,7 +6928,7 @@ async function unbindStyles(params) {
             node[field] = "";
           }
         } catch (e) {
-          rec.error = String(e && e.message ? e.message : e);
+          rec.error = errMsg(e);
         }
       }
       cleared.push(rec);
@@ -7024,9 +7037,7 @@ async function detachInstances(params) {
         try {
           t.node.detachInstance();
         } catch (e) {
-          detached[detached.length - 1].error = String(
-            e && e.message ? e.message : e
-          );
+          detached[detached.length - 1].error = errMsg(e);
         }
       }
     }
@@ -7119,7 +7130,7 @@ async function getHyperlinks(params) {
             entry.destPage = dest ? pageNameOf(dest) : null;
           } catch (e2) {
             entry.destExists = false;
-            entry.destError = String(e2 && e2.message ? e2.message : e2);
+            entry.destError = errMsg(e2);
           }
         }
         links.push(entry);
@@ -7441,7 +7452,7 @@ async function bindVariable(params) {
     try {
       variable = await figma.variables.importVariableByKeyAsync(params.variableKey);
     } catch (e) {
-      throw new Error("importVariableByKeyAsync failed for key " + params.variableKey + ": " + e.message);
+      throw new Error("importVariableByKeyAsync failed for key " + params.variableKey + ": " + errMsg(e));
     }
   } else if (params.variableId) {
     variable = await figma.variables.getVariableByIdAsync(params.variableId);
@@ -7481,7 +7492,7 @@ async function bindVariable(params) {
     try {
       node = await figma.getNodeByIdAsync(id);
     } catch (e) {
-      failed.push({ nodeId: id, reason: e.message });
+      failed.push({ nodeId: id, reason: errMsg(e) });
       continue;
     }
     if (!node) {
@@ -7553,7 +7564,7 @@ async function bindVariable(params) {
         bound.push({ nodeId: id, name: node.name, type: node.type });
       }
     } catch (e) {
-      failed.push({ nodeId: id, name: node.name, reason: e.message });
+      failed.push({ nodeId: id, name: node.name, reason: errMsg(e) });
     }
   }
 
@@ -7651,7 +7662,7 @@ async function unbindVariable(params) {
       try {
         nd = await figma.getNodeByIdAsync(nodeIds[i]);
       } catch (e) {
-        failed.push({ nodeId: nodeIds[i], reason: e.message });
+        failed.push({ nodeId: nodeIds[i], reason: errMsg(e) });
         continue;
       }
       if (!nd) { failed.push({ nodeId: nodeIds[i], reason: "Node not found" }); continue; }
@@ -7708,7 +7719,7 @@ async function unbindVariable(params) {
       }
       unbound.push({ nodeId: id, name: node.name, type: node.type, page: pageNameOf(node), cleared: hit, variable: wasNames.join(", ") });
     } catch (e) {
-      failed.push({ nodeId: id, name: node.name, reason: e.message });
+      failed.push({ nodeId: id, name: node.name, reason: errMsg(e) });
     }
   }
 
@@ -7789,7 +7800,7 @@ async function getComponentProperties(params) {
     try {
       defs = t.componentPropertyDefinitions;
     } catch (e) {
-      failed.push({ nodeId: t.id, name: t.name, reason: e.message });
+      failed.push({ nodeId: t.id, name: t.name, reason: errMsg(e) });
       continue;
     }
 
@@ -7863,7 +7874,7 @@ async function setSizeConstraints(params) {
       for (const key of keys) entry[key] = node[key];
       results.push(entry);
     } catch (error) {
-      results.push({ id: node.id, name: node.name, success: false, error: error.message });
+      results.push({ id: node.id, name: node.name, success: false, error: errMsg(error) });
     }
   }
   return { updated: results.filter((r) => r.success).length, results };
@@ -7879,7 +7890,7 @@ async function setVisible(params) {
       node.visible = visible;
       results.push({ id: node.id, name: node.name, visible: node.visible, success: true });
     } catch (error) {
-      results.push({ id: node.id, name: node.name, success: false, error: error.message });
+      results.push({ id: node.id, name: node.name, success: false, error: errMsg(error) });
     }
   }
   return { updated: results.filter((r) => r.success).length, results };
@@ -7986,6 +7997,178 @@ async function getVariableModes(params) {
   return out;
 }
 
+// 한 컬렉션(예: resolution)이 어디서 쓰이는지 전수 조사한다. 두 갈래:
+//  1) explicit: 모드를 직접 지정한 노드 (페이지 포함, 깊이 무관)
+//  2) bindings: 그 컬렉션의 변수가 필드/속성에 묶인 노드
+// get_variable_modes 는 노드+직속 자식만 보므로 깊은 곳의 모드 지정을 놓친다.
+// 컬렉션 이름을 못 읽는 경우(삭제·비활성 라이브러리)는 id 그대로 남기고 unresolved 로 표시한다.
+async function findModeUsage(params) {
+  params = params || {};
+  var commandId = params.commandId || generateCommandId();
+  var filter = params.collection ? String(params.collection).toLowerCase() : null;
+  var limit = typeof params.limit === "number" ? params.limit : 300;
+  var includeBindings = params.includeBindings !== false;
+
+  var root;
+  if (params.nodeId) {
+    root = await figma.getNodeByIdAsync(params.nodeId);
+    if (!root) throw new Error("Node not found with ID: " + params.nodeId);
+  } else if (params.pageName) {
+    await figma.loadAllPagesAsync();
+    root = figma.root.children.find(function (p) { return p.name === params.pageName; });
+    if (!root) throw new Error("Page not found: " + params.pageName);
+  } else {
+    root = figma.currentPage;
+  }
+  if (root.type === "PAGE") await root.loadAsync();
+
+  var collCache = {};
+  async function coll(id) {
+    if (!(id in collCache)) {
+      var c = null;
+      try { c = await figma.variables.getVariableCollectionByIdAsync(id); } catch (e) { c = null; }
+      collCache[id] = c;
+    }
+    return collCache[id];
+  }
+  var varCache = {};
+  async function variable(id) {
+    if (!(id in varCache)) {
+      var v = null;
+      try { v = await figma.variables.getVariableByIdAsync(id); } catch (e) { v = null; }
+      varCache[id] = v;
+    }
+    return varCache[id];
+  }
+  function matches(name, id) {
+    if (!filter) return true;
+    return (name && name.toLowerCase().indexOf(filter) !== -1) || id.toLowerCase().indexOf(filter) !== -1;
+  }
+  // 최상위 화면: 부모가 PAGE 또는 SECTION 인 가장 가까운 조상
+  function screenOf(node) {
+    if (node.type === "PAGE" || node.type === "DOCUMENT") return null;
+    var n = node;
+    while (n && n.parent && n.parent.type !== "PAGE" && n.parent.type !== "SECTION") n = n.parent;
+    return n && n.type !== "PAGE" ? { id: n.id, name: n.name } : null;
+  }
+  function insideInstance(node) {
+    for (var p = node.parent; p && p.type !== "PAGE"; p = p.parent) if (p.type === "INSTANCE") return true;
+    return false;
+  }
+
+  var nodes = [root];
+  if ("findAll" in root) nodes = nodes.concat(root.findAll());
+  await sendProgressUpdate(commandId, "find_mode_usage", "started", 0, nodes.length, 0,
+    "Scanning " + nodes.length + " node(s)...", null);
+
+  var explicit = [];
+  var explicitTotal = 0;
+  var bindings = [];
+  var bindingTotal = 0;
+  var byVariable = {};
+  var byScreen = {};
+  var collectionsSeen = {};
+
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    if (i > 0 && i % 2000 === 0) {
+      await sendProgressUpdate(commandId, "find_mode_usage", "in_progress",
+        Math.round((i / nodes.length) * 100), nodes.length, i, "Scanned " + i + " node(s)", null);
+    }
+
+    var modes = node.explicitVariableModes || {};
+    var hit = {};
+    for (var collId in modes) {
+      var c = await coll(collId);
+      var cname = c ? c.name : null;
+      collectionsSeen[collId] = cname || "(unresolved)";
+      if (!matches(cname, collId)) continue;
+      var mode = c && c.modes.find(function (m) { return m.modeId === modes[collId]; });
+      hit[cname || collId] = mode ? mode.name : modes[collId] + (c ? " (mode not found)" : " (unresolved collection)");
+    }
+    if (Object.keys(hit).length) {
+      explicitTotal++;
+      if (explicit.length < limit) {
+        var sc = screenOf(node);
+        explicit.push({ id: node.id, name: node.name, type: node.type, screen: sc ? sc.name : null,
+          insideInstance: insideInstance(node), modes: hit });
+      }
+    }
+
+    if (!includeBindings) continue;
+    var fields = [];
+    var bv = node.boundVariables || {};
+    for (var field in bv) {
+      var a = bv[field];
+      var list = Array.isArray(a) ? a : [a];
+      for (var k = 0; k < list.length; k++) if (list[k] && list[k].id) fields.push({ field: field, id: list[k].id });
+    }
+    if (node.type === "INSTANCE") {
+      try {
+        var props = node.componentProperties || {};
+        for (var key in props) {
+          var pa = props[key].boundVariables && props[key].boundVariables.value;
+          if (pa && pa.id) fields.push({ field: "prop:" + key.split("#")[0], id: pa.id });
+        }
+      } catch (e) { /* 깨진 인스턴스는 건너뛴다 */ }
+    }
+    var nodeHits = [];
+    for (var f = 0; f < fields.length; f++) {
+      var v = await variable(fields[f].id);
+      if (!v) continue;
+      var vc = await coll(v.variableCollectionId);
+      var vcName = vc ? vc.name : null;
+      collectionsSeen[v.variableCollectionId] = vcName || "(unresolved)";
+      if (!matches(vcName, v.variableCollectionId)) continue;
+      nodeHits.push(fields[f].field + " = " + v.name);
+      var vkey = (vcName || v.variableCollectionId) + " / " + v.name;
+      byVariable[vkey] = (byVariable[vkey] || 0) + 1;
+    }
+    if (nodeHits.length) {
+      bindingTotal++;
+      var s = screenOf(node);
+      var sname = s ? s.name : "(page)";
+      byScreen[sname] = (byScreen[sname] || 0) + 1;
+      if (bindings.length < limit) {
+        bindings.push({ id: node.id, name: node.name, type: node.type, screen: s ? s.name : null,
+          insideInstance: insideInstance(node), uses: nodeHits });
+      }
+    }
+  }
+
+  await sendProgressUpdate(commandId, "find_mode_usage", "completed", 100, nodes.length, nodes.length,
+    "Done", null);
+
+  // 같은 이름의 컬렉션이 여러 라이브러리에서 올 수 있다 — key 로 라이브러리 이름을 붙인다.
+  var libByKey = {};
+  try {
+    var libColls = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    for (var li = 0; li < libColls.length; li++) libByKey[libColls[li].key] = libColls[li].libraryName;
+  } catch (e) { /* teamlibrary 권한 없음 */ }
+  var collections = {};
+  for (var cid in collectionsSeen) {
+    var cobj = collCache[cid];
+    collections[cid] = {
+      name: cobj ? cobj.name : "(unresolved)",
+      remote: cobj ? !!cobj.remote : null,
+      library: cobj && cobj.remote ? (libByKey[cobj.key] || "(library not enabled)") : (cobj ? "(local)" : null),
+    };
+  }
+
+  return {
+    scope: { id: root.id, name: root.name, type: root.type },
+    filter: params.collection || null,
+    scannedNodes: nodes.length,
+    collectionsSeen: collections,
+    explicitTotal: explicitTotal,
+    explicit: explicit,
+    bindingTotal: includeBindings ? bindingTotal : null,
+    byVariable: byVariable,
+    byScreen: byScreen,
+    bindings: bindings,
+  };
+}
+
 // 노드의 변수 모드를 바꾼다 (오른쪽 패널의 모드 선택과 같음). collection/mode 는 이름.
 // 컬렉션은 노드에 적용 중인 것(resolvedVariableModes) → 로컬 컬렉션 순으로 찾는다.
 async function setVariableMode(params) {
@@ -8088,7 +8271,7 @@ async function setInstanceProperties(params) {
       for (const k of Object.keys(diff)) after[bareProp(k)] = await describe(k);
       results.push({ id: nodeId, name: node.name, before, after, changed: Object.keys(diff).length, success: true });
     } catch (error) {
-      results.push({ id: nodeId, success: false, error: error.message });
+      results.push({ id: nodeId, success: false, error: errMsg(error) });
     }
   }
   return { updated: results.filter((r) => r.success && r.changed).length, results };
@@ -8105,7 +8288,7 @@ async function clearFills(params) {
       node.fills = [];
       results.push({ id: node.id, name: node.name, success: true });
     } catch (error) {
-      results.push({ id: node.id, name: node.name, success: false, error: error.message });
+      results.push({ id: node.id, name: node.name, success: false, error: errMsg(error) });
     }
   }
   return { updated: results.filter((r) => r.success).length, results };
@@ -8173,7 +8356,7 @@ async function addComponentProperty(params) {
       );
       bound.push({ id: node.id, name: node.name });
     } catch (error) {
-      failed.push({ id, name: node.name, error: error.message });
+      failed.push({ id, name: node.name, error: errMsg(error) });
     }
   }
 
@@ -8413,7 +8596,7 @@ async function replaceVariableBindings(params) {
             try {
               await Promise.all(node.getRangeAllFontNames(segs[sg].start, segs[sg].end).map(function (f) { return figma.loadFontAsync(f); }));
               node.setRangeFills(segs[sg].start, segs[sg].end, nx); changed[node.id] = true;
-            } catch (e) { unresolved.push({ nodeId: node.id, name: node.name, where: "textRange", reason: e.message }); }
+            } catch (e) { unresolved.push({ nodeId: node.id, name: node.name, where: "textRange", reason: errMsg(e) }); }
           }
         }
         continue;
@@ -8422,7 +8605,7 @@ async function replaceVariableBindings(params) {
       var nxt = await processPaints(node, paints, prop);
       if (nxt && !dryRun) {
         try { node[prop] = nxt; changed[node.id] = true; }
-        catch (e) { unresolved.push({ nodeId: node.id, name: node.name, where: prop, reason: e.message }); }
+        catch (e) { unresolved.push({ nodeId: node.id, name: node.name, where: prop, reason: errMsg(e) }); }
       }
     }
     // 숫자
@@ -8438,7 +8621,7 @@ async function replaceVariableBindings(params) {
       record(sourceCollection + " / " + nv.name + (nv.remote ? " (remote)" : "") + " -> " + collById[tg.variable.variableCollectionId].name + " / " + tg.variable.name + " [" + field + "]", node.id);
       if (!dryRun) {
         try { node.setBoundVariable(field, tg.variable); changed[node.id] = true; }
-        catch (e) { unresolved.push({ nodeId: node.id, name: node.name, where: field, reason: e.message }); }
+        catch (e) { unresolved.push({ nodeId: node.id, name: node.name, where: field, reason: errMsg(e) }); }
       }
     }
   }
@@ -8593,7 +8776,7 @@ async function applyTextStyles(params) {
         await figma.loadFontAsync(pick.fontName);
         await node.setTextStyleIdAsync(pick.id);
       } catch (e) {
-        failed.push({ id: node.id, name: node.name, reason: e.message });
+        failed.push({ id: node.id, name: node.name, reason: errMsg(e) });
         byStyle[pick.name]--;
         continue;
       }
@@ -8706,7 +8889,7 @@ async function createTextStyles(params) {
       }
       results.push(out);
     } catch (e) {
-      errors.push({ name: it && it.name, reason: e.message });
+      errors.push({ name: it && it.name, reason: errMsg(e) });
     }
   }
   return { dryRun: dryRun, requested: items.length, done: results.length, results: results, errors: errors };
@@ -8830,7 +9013,7 @@ async function createVariables(params) {
       }
       results.push(out);
     } catch (e) {
-      errors.push({ name: it && it.name, reason: e.message });
+      errors.push({ name: it && it.name, reason: errMsg(e) });
     }
   }
   return { dryRun: dryRun, requested: items.length, done: results.length, results: results, errors: errors };
@@ -8916,7 +9099,7 @@ async function renameVariables(params) {
       try {
         v.name = p.newName;
       } catch (error) {
-        errors.push({ variableId: v.id, collection: collectionName, name: previousName, newName: p.newName, error: error.message });
+        errors.push({ variableId: v.id, collection: collectionName, name: previousName, newName: p.newName, error: errMsg(error) });
         continue;
       }
     }
