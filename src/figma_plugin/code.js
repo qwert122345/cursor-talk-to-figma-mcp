@@ -349,6 +349,8 @@ async function handleCommand(command, params) {
       return await createTextStyles(params);
     case "set_text_range_fills":
       return await setTextRangeFills(params);
+    case "export_text_tree":
+      return await exportTextTree(params);
     case "set_hyperlink":
       return await setHyperlink(params);
     case "create_variables":
@@ -9001,6 +9003,105 @@ async function setHyperlink(params) {
 
 // E-35: TEXT 노드의 글자 범위 색을 변수에 묶는다(강조색 등). 범위 = match(처음 나오는 부분 문자열, occurrence 로 n번째)
 // 또는 start/end. 색 = collection+variableName(로컬) | variableId | variableKey. 범위 밖 글자는 그대로.
+// E-36: read every TEXT under a page (or node) with its context, for copy checks.
+// Pages through the top-level frames (offset/limit) so one reply stays small;
+// the MCP server loops and writes the whole result to a file.
+async function exportTextTree(params) {
+  params = params || {};
+  var root = params.nodeId ? await figma.getNodeByIdAsync(params.nodeId) : figma.currentPage;
+  if (!root) throw new Error("Node not found: " + params.nodeId);
+  var page = root;
+  while (page && page.type !== "PAGE") page = page.parent;
+  if (page && page.loadAsync) await page.loadAsync();
+  var includeHidden = params.includeHidden === true;
+  var prefixes = Array.isArray(params.includeTopPrefixes) ? params.includeTopPrefixes : null;
+
+  // Top-level frames: direct children of the root, and of sections inside it.
+  var tops = [];
+  function collectTops(n, sectionName) {
+    if (!("children" in n)) return;
+    n.children.forEach(function (c) {
+      if (c.type === "SECTION") collectTops(c, c.name);
+      else tops.push({ node: c, section: sectionName || null });
+    });
+  }
+  if (root.type === "PAGE" || root.type === "SECTION") collectTops(root, root.type === "SECTION" ? root.name : null);
+  else tops.push({ node: root, section: null });
+  var totalTops = tops.length;
+  if (prefixes) {
+    tops = tops.filter(function (t) {
+      return prefixes.some(function (p) { return t.node.name.indexOf(p) === 0; });
+    });
+  }
+  var matchedTops = tops.length;
+  var offset = params.offset || 0;
+  var limit = params.limit || 20;
+  var slice = tops.slice(offset, offset + limit);
+
+  var mainCache = {};
+  async function instanceInfo(inst) {
+    if (mainCache[inst.id]) return mainCache[inst.id];
+    var main = null;
+    try { main = await inst.getMainComponentAsync(); } catch (e) { main = null; }
+    var info = {
+      id: inst.id,
+      name: inst.name,
+      component: main ? main.name : null,
+      componentSet: main && main.parent && main.parent.type === "COMPONENT_SET" ? main.parent.name : null,
+    };
+    mainCache[inst.id] = info;
+    return info;
+  }
+
+  var texts = [];
+  for (var i = 0; i < slice.length; i++) {
+    var top = slice[i].node;
+    var found = top.type === "TEXT" ? [top] : ("findAllWithCriteria" in top ? top.findAllWithCriteria({ types: ["TEXT"] }) : []);
+    for (var j = 0; j < found.length; j++) {
+      var t = found[j];
+      var visible = true;
+      var instances = [];
+      var parentFrame = null;
+      var path = [];
+      var n = t;
+      while (n && n !== top.parent) {
+        if (n.visible === false) visible = false;
+        if (n !== t) path.unshift(n.name);
+        if (n !== t && n.type === "INSTANCE") instances.unshift(n);
+        if (n !== t && !parentFrame && (n.type === "FRAME" || n.type === "INSTANCE" || n.type === "COMPONENT" || n.type === "GROUP")) parentFrame = n.name;
+        n = n.parent;
+      }
+      if (!visible && !includeHidden) continue;
+      var chain = [];
+      for (var k = 0; k < instances.length; k++) chain.push(await instanceInfo(instances[k]));
+      var ref = t.componentPropertyReferences && t.componentPropertyReferences.characters;
+      texts.push({
+        nodeId: t.id,
+        text: t.characters,
+        layer: t.name,
+        visible: visible,
+        textProperty: ref || null,
+        instance: chain.length ? chain[chain.length - 1] : null,
+        instancePath: chain.map(function (c) { return c.componentSet || c.component || c.name; }),
+        parentFrame: parentFrame,
+        path: path,
+        x: Math.round(t.absoluteTransform[0][2]),
+        y: Math.round(t.absoluteTransform[1][2]),
+        topFrame: { id: top.id, name: top.name, section: slice[i].section },
+      });
+    }
+  }
+  var next = offset + limit < matchedTops ? offset + limit : null;
+  return {
+    fileName: figma.root.name,
+    page: page ? { id: page.id, name: page.name } : null,
+    root: { id: root.id, name: root.name, type: root.type },
+    topFrames: { total: totalTops, matched: matchedTops, offset: offset, returned: slice.length },
+    nextOffset: next,
+    texts: texts,
+  };
+}
+
 async function setTextRangeFills(params) {
   params = params || {};
   var items = params.items;

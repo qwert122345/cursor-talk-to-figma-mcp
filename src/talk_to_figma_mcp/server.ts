@@ -5,7 +5,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
-import { readFile } from "fs/promises";
+import { readFile, writeFile, mkdir } from "fs/promises";
+import { dirname } from "path";
 
 // Define TypeScript interfaces for Figma responses
 interface FigmaResponse {
@@ -2931,6 +2932,7 @@ type FigmaCommand =
   | "create_text_styles"
   | "set_hyperlink"
   | "set_text_range_fills"
+  | "export_text_tree"
   | "create_variables";
 
 
@@ -3882,6 +3884,65 @@ server.tool(
     dryRun: z.boolean().optional().describe("Report the ranges without writing"),
   },
   jsonToolHandler("set_text_range_fills", "setting text range fills")
+);
+
+server.tool(
+  "export_text_tree",
+  "Dump every TEXT under a page, section or node to a JSON file, with context for copy checks: nodeId, text, layer name, the TEXT property it is bound to, the nearest instance (its component and component set), the instance chain, the parent frame, the ancestor name path, position, and the top-level frame (a direct child of the page or of a section) with its section. Hidden texts are left out unless includeHidden. includeTopPrefixes keeps only top-level frames whose names start with one of them. The server pages through the top-level frames itself and writes the whole result to outputPath; only a summary comes back. expectFileName stops before writing when the open file has another name.",
+  {
+    nodeId: z.string().optional().describe("Page, section or node to read (default: current page)"),
+    outputPath: z.string().describe("Absolute path of the JSON file to write"),
+    expectFileName: z.string().optional().describe("Abort when the open file's name differs"),
+    includeTopPrefixes: z.array(z.string()).optional().describe("Only top-level frames whose names start with these"),
+    includeHidden: z.boolean().optional().describe("Also dump texts that are hidden (default false)"),
+    pageSize: z.number().min(1).max(200).optional().describe("Top-level frames per plugin call (default 20)"),
+  },
+  async ({ nodeId, outputPath, expectFileName, includeTopPrefixes, includeHidden, pageSize }: any) => {
+    try {
+      const texts: any[] = [];
+      let head: any = null;
+      let offset: number | null = 0;
+      let calls = 0;
+      while (offset !== null) {
+        const r: any = await sendCommandToFigma(
+          "export_text_tree",
+          { nodeId, includeTopPrefixes, includeHidden, offset, limit: pageSize || 20 },
+          60000
+        );
+        calls++;
+        if (!head) {
+          head = r;
+          if (expectFileName && r.fileName !== expectFileName) {
+            return errorResult("Wrong file: ", `open file is "${r.fileName}", expected "${expectFileName}". Nothing written.`);
+          }
+        }
+        texts.push(...(r.texts || []));
+        offset = r.nextOffset;
+      }
+      const out = {
+        exportedAt: new Date().toISOString(),
+        fileName: head.fileName,
+        page: head.page,
+        root: head.root,
+        topFrames: { total: head.topFrames.total, matched: head.topFrames.matched },
+        textCount: texts.length,
+        texts,
+      };
+      await mkdir(dirname(outputPath), { recursive: true });
+      await writeFile(outputPath, JSON.stringify(out, null, 1), "utf8");
+      return jsonResult({
+        outputPath,
+        fileName: out.fileName,
+        page: out.page,
+        root: out.root,
+        topFrames: out.topFrames,
+        textCount: out.textCount,
+        pluginCalls: calls,
+      });
+    } catch (error) {
+      return errorResult("Error exporting text tree: ", error);
+    }
+  }
 );
 
 server.tool(
