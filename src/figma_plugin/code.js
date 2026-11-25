@@ -347,6 +347,8 @@ async function handleCommand(command, params) {
       return await applyTextStyles(params);
     case "create_text_styles":
       return await createTextStyles(params);
+    case "set_text_range_fills":
+      return await setTextRangeFills(params);
     case "set_hyperlink":
       return await setHyperlink(params);
     case "create_variables":
@@ -8995,6 +8997,68 @@ async function setHyperlink(params) {
     hyperlink: link,
     underline: params.underline === true,
   };
+}
+
+// E-35: TEXT 노드의 글자 범위 색을 변수에 묶는다(강조색 등). 범위 = match(처음 나오는 부분 문자열, occurrence 로 n번째)
+// 또는 start/end. 색 = collection+variableName(로컬) | variableId | variableKey. 범위 밖 글자는 그대로.
+async function setTextRangeFills(params) {
+  params = params || {};
+  var items = params.items;
+  var dryRun = params.dryRun === true;
+  if (!Array.isArray(items) || items.length === 0) throw new Error("Missing items");
+
+  var colls = await figma.variables.getLocalVariableCollectionsAsync();
+  var collNameById = {};
+  colls.forEach(function (c) { collNameById[c.id] = c.name; });
+  var locals = await figma.variables.getLocalVariablesAsync("COLOR");
+
+  async function findVariable(it) {
+    if (it.variableName && it.collection) {
+      var hits = locals.filter(function (v) { return v.name === it.variableName && collNameById[v.variableCollectionId] === it.collection; });
+      if (hits.length !== 1) throw new Error("Color variable " + it.collection + " / " + it.variableName + ": " + hits.length + " found");
+      return hits[0];
+    }
+    return await resolveVariableRef(it);
+  }
+
+  var results = [], errors = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    try {
+      var node = await figma.getNodeByIdAsync(it.nodeId);
+      if (!node) throw new Error("Node not found");
+      if (node.type !== "TEXT") throw new Error("Not a TEXT node: " + node.type);
+      var text = node.characters;
+      var start, end;
+      if (typeof it.match === "string" && it.match.length) {
+        var nth = typeof it.occurrence === "number" && it.occurrence > 1 ? it.occurrence : 1;
+        var at = -1;
+        for (var k = 0; k < nth; k++) {
+          at = text.indexOf(it.match, at + 1);
+          if (at === -1) break;
+        }
+        if (at === -1) throw new Error("match not found: " + it.match);
+        start = at; end = at + it.match.length;
+      } else if (typeof it.start === "number" && typeof it.end === "number") {
+        start = it.start; end = it.end;
+      } else {
+        throw new Error("Pass match or start/end");
+      }
+      if (start < 0 || end > text.length || start >= end) throw new Error("Bad range " + start + "-" + end);
+
+      var variable = await findVariable(it);
+      if (!dryRun) {
+        var fonts = node.getRangeAllFontNames(0, text.length);
+        for (var f = 0; f < fonts.length; f++) await figma.loadFontAsync(fonts[f]);
+        var paint = figma.variables.setBoundVariableForPaint({ type: "SOLID", color: { r: 0, g: 0, b: 0 } }, "color", variable);
+        node.setRangeFills(start, end, [paint]);
+      }
+      results.push({ nodeId: node.id, range: [start, end], text: text.slice(start, end), variable: (collNameById[variable.variableCollectionId] || "?") + " / " + variable.name });
+    } catch (e) {
+      errors.push({ nodeId: it.nodeId, match: it.match, reason: errMsg(e) });
+    }
+  }
+  return { dryRun: dryRun, requested: items.length, done: results.length, results: results, errors: errors };
 }
 
 // E-34: 로컬 변수 만들기. copyFrom(같은 컬렉션 변수)이면 타입·scope·모드별 값을 그대로 복사한 뒤 values 로 모드별로 덮는다.

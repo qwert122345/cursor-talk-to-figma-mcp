@@ -2930,6 +2930,7 @@ type FigmaCommand =
   | "apply_text_styles"
   | "create_text_styles"
   | "set_hyperlink"
+  | "set_text_range_fills"
   | "create_variables";
 
 
@@ -3856,6 +3857,31 @@ server.tool(
     dryRun: z.boolean().optional().describe("Report the range without writing"),
   },
   jsonToolHandler("set_hyperlink", "setting hyperlink")
+);
+
+server.tool(
+  "set_text_range_fills",
+  "Bind the text color of a range inside TEXT nodes to a color variable (highlighting words, e.g. a Don't example in red and a Do example in blue). Each item names a TEXT node and a range — match (first occurrence, or the n-th with occurrence) or start/end — and the variable: collection + variableName for a local variable (e.g. CL/PRI + Coral/500), or variableId / variableKey. Characters outside the range keep their fill. Batch many nodes in one call. Pass dryRun first to see which characters each item hits.",
+  {
+    items: z
+      .array(
+        z.object({
+          nodeId: z.string().describe("TEXT node id"),
+          match: z.string().optional().describe("Substring to color"),
+          occurrence: z.number().optional().describe("Which occurrence of match (default 1)"),
+          start: z.number().optional().describe("Range start when match is not given"),
+          end: z.number().optional().describe("Range end (exclusive)"),
+          collection: z.string().optional().describe("Local collection name, with variableName"),
+          variableName: z.string().optional().describe("Color variable name, e.g. Coral/500"),
+          variableId: z.string().optional(),
+          variableKey: z.string().optional(),
+        })
+      )
+      .min(1)
+      .describe("Ranges to color"),
+    dryRun: z.boolean().optional().describe("Report the ranges without writing"),
+  },
+  jsonToolHandler("set_text_range_fills", "setting text range fills")
 );
 
 server.tool(

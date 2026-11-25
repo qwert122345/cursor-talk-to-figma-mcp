@@ -3116,6 +3116,27 @@ server.tool(
   jsonToolHandler("set_hyperlink", "setting hyperlink")
 );
 server.tool(
+  "set_text_range_fills",
+  "Bind the text color of a range inside TEXT nodes to a color variable (highlighting words, e.g. a Don't example in red and a Do example in blue). Each item names a TEXT node and a range \u2014 match (first occurrence, or the n-th with occurrence) or start/end \u2014 and the variable: collection + variableName for a local variable (e.g. CL/PRI + Coral/500), or variableId / variableKey. Characters outside the range keep their fill. Batch many nodes in one call. Pass dryRun first to see which characters each item hits.",
+  {
+    items: import_zod.z.array(
+      import_zod.z.object({
+        nodeId: import_zod.z.string().describe("TEXT node id"),
+        match: import_zod.z.string().optional().describe("Substring to color"),
+        occurrence: import_zod.z.number().optional().describe("Which occurrence of match (default 1)"),
+        start: import_zod.z.number().optional().describe("Range start when match is not given"),
+        end: import_zod.z.number().optional().describe("Range end (exclusive)"),
+        collection: import_zod.z.string().optional().describe("Local collection name, with variableName"),
+        variableName: import_zod.z.string().optional().describe("Color variable name, e.g. Coral/500"),
+        variableId: import_zod.z.string().optional(),
+        variableKey: import_zod.z.string().optional()
+      })
+    ).min(1).describe("Ranges to color"),
+    dryRun: import_zod.z.boolean().optional().describe("Report the ranges without writing")
+  },
+  jsonToolHandler("set_text_range_fills", "setting text range fills")
+);
+server.tool(
   "create_variables",
   "Create local variables. copyFrom (a variable in the same collection) copies its type, scopes and every mode value \u2014 including an alias that carries opacity, like State/Pressed/Background \u2014 and values then overrides modes by mode name: { hex } | { alias, aliasCollection?, opacity? } | number | string | boolean. An existing name is reported under errors. Pass dryRun first.",
   {
