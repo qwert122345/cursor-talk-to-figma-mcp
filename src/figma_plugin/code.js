@@ -351,6 +351,12 @@ async function handleCommand(command, params) {
       return await setTextRangeFills(params);
     case "export_text_tree":
       return await exportTextTree(params);
+    case "review_page":
+      return await reviewPage(params);
+    case "review_section":
+      return await reviewSection(params);
+    case "inspect_paints":
+      return await inspectPaints(params);
     case "set_hyperlink":
       return await setHyperlink(params);
     case "create_variables":
@@ -9074,6 +9080,14 @@ async function exportTextTree(params) {
     return out;
   }
 
+  function overridesText(inst, id) {
+    var ov = inst.overrides || [];
+    for (var q = 0; q < ov.length; q++) {
+      if (ov[q].id === id && ov[q].overriddenFields.indexOf("characters") >= 0) return true;
+    }
+    return false;
+  }
+
   var texts = [];
   for (var i = 0; i < slice.length; i++) {
     var top = slice[i].node;
@@ -9109,6 +9123,8 @@ async function exportTextTree(params) {
         x: Math.round(t.absoluteTransform[0][2]),
         y: Math.round(t.absoluteTransform[1][2]),
         fills: textFills(t),
+        // 화면에 놓인(가장 바깥) 인스턴스에서 이 글자를 덮어썼나 — false 면 메인 컴포넌트 기본 글자
+        textOverride: instances.length ? overridesText(instances[0], t.id) : null,
         topFrame: { id: top.id, name: top.name, section: slice[i].section, sectionId: slice[i].sectionId || null, x: Math.round(top.absoluteTransform[0][2]) },
       });
     }
@@ -9541,4 +9557,229 @@ async function findVariableUsage(params) {
     componentsWithHits: results.length,
     results: results,
   };
+}
+
+
+// ── E-37 리뷰 리스팅(UX 라이팅 수정 건 페이지) ─────────────────────────────
+// 쓰기는 이름이 'UX 라이팅 수정 건'으로 시작하는 페이지(앞의 ↳·공백 무시)에만. 원본 프레임은 clone() 만 한다.
+var REVIEW_PAGE_PREFIX = "UX 라이팅 수정 건";
+function isReviewPageName(name) {
+  return String(name || "").replace(/^[\s↳]+/, "").indexOf(REVIEW_PAGE_PREFIX) === 0;
+}
+function normText(s) { return String(s || "").replace(/[\u2028\u2029]/g, "\n").trim(); }
+function hexToRgb(hex) {
+  var h = hex.replace("#", "");
+  return { r: parseInt(h.slice(0, 2), 16) / 255, g: parseInt(h.slice(2, 4), 16) / 255, b: parseInt(h.slice(4, 6), 16) / 255 };
+}
+function insideNode(node, root) {
+  for (var n = node; n; n = n.parent) if (n === root) return true;
+  return false;
+}
+async function pageOf(node) {
+  var p = node;
+  while (p && p.type !== "PAGE") p = p.parent;
+  if (p && p.loadAsync) await p.loadAsync();
+  return p;
+}
+
+async function reviewPage(params) {
+  var name = params.pageName;
+  if (!isReviewPageName(name)) throw new Error("Refused: page name must start with '" + REVIEW_PAGE_PREFIX + "': " + name);
+  var existing = figma.root.children.filter(function (p) { return p.name === name; });
+  if (existing.length) throw new Error("Refused: a page named '" + name + "' already exists (" + existing[0].id + "). Nothing written.");
+  if (params.dryRun) return { fileName: figma.root.name, dryRun: true, wouldCreate: name };
+  var page = figma.createPage();
+  page.name = name;
+  return { fileName: figma.root.name, pageId: page.id, name: page.name };
+}
+
+async function resolvePaint(p) {
+  var paint = { type: "SOLID", color: hexToRgb(p.color), opacity: p.opacity == null ? 1 : p.opacity };
+  if (p.variable && p.variable.key) {
+    try {
+      var v = await figma.variables.importVariableByKeyAsync(p.variable.key);
+      paint = figma.variables.setBoundVariableForPaint(paint, "color", v);
+    } catch (e) { /* 값만 쓴다 */ }
+  } else if (p.variable && p.variable.id) {
+    var lv = await figma.variables.getVariableByIdAsync(p.variable.id);
+    if (lv) paint = figma.variables.setBoundVariableForPaint(paint, "color", lv);
+  }
+  return paint;
+}
+
+async function addPinkFill(node, pink) {
+  var paint = { type: "SOLID", color: hexToRgb(pink) };
+  if (node.fills !== figma.mixed) { node.fills = node.fills.concat([paint]); return; }
+  var segs = node.getStyledTextSegments(["fills"]);
+  for (var i = 0; i < segs.length; i++) node.setRangeFills(segs[i].start, segs[i].end, segs[i].fills.concat([paint]));
+}
+
+async function writeText(node, text) {
+  if (/[\u2028]/.test(node.characters)) text = text.replace(/\n/g, "\u2028");
+  if (hasRichText(node)) { await setTextPreservingLinks(node, text); return; }
+  await figma.loadFontAsync(node.fontName);
+  await setCharacters(node, text);
+}
+
+async function makeBadge(spec, section) {
+  var inst = null, how = null;
+  try {
+    var comp = await figma.importComponentByKeyAsync(spec.key);
+    inst = comp.createInstance();
+    var t = inst.findOne(function (n) { return n.type === "TEXT"; });
+    if (t && normText(t.characters) !== spec.label) {
+      await figma.loadFontAsync(t.fontName);
+      t.characters = spec.label;
+    }
+    how = "key";
+  } catch (e) {
+    if (inst) { try { inst.remove(); } catch (e2) {} }
+    inst = null;
+  }
+  if (!inst && spec.seedId) {
+    var seed = await figma.getNodeByIdAsync(spec.seedId);
+    if (!seed) throw new Error("Badge seed not found: " + spec.seedId);
+    await pageOf(seed);
+    inst = seed.clone();
+    how = "seed";
+  }
+  if (!inst) throw new Error("Badge: neither key nor seed worked for " + spec.label);
+  section.appendChild(inst);
+  return { node: inst, how: how };
+}
+
+async function textNode(chars, style, color, width) {
+  var t = figma.createText();
+  await figma.loadFontAsync({ family: "SUIT", style: style });
+  t.fontName = { family: "SUIT", style: style };
+  t.characters = chars;
+  t.fills = [{ type: "SOLID", color: hexToRgb(color) }];
+  return t;
+}
+
+async function buildTable(spec, st) {
+  var tb = figma.createFrame();
+  tb.name = "Changed-Screens";
+  tb.layoutMode = "VERTICAL"; tb.primaryAxisSizingMode = "AUTO"; tb.counterAxisSizingMode = "AUTO";
+  tb.paddingTop = tb.paddingBottom = tb.paddingLeft = tb.paddingRight = st.padding;
+  tb.itemSpacing = 16; tb.cornerRadius = st.radius;
+  tb.fills = [{ type: "SOLID", color: hexToRgb(st.background) }];
+  var title = await textNode(spec.title, "Bold", st.titleColor);
+  title.fontSize = 20; title.lineHeight = { value: 30, unit: "PIXELS" }; title.name = spec.title;
+  tb.appendChild(title);
+  var table = figma.createFrame();
+  table.name = "Container-Table"; table.layoutMode = "VERTICAL";
+  table.primaryAxisSizingMode = "AUTO"; table.counterAxisSizingMode = "AUTO"; table.fills = [];
+  tb.appendChild(table);
+  async function row(cells, header) {
+    var r = figma.createFrame();
+    r.name = header ? "Container-Header" : "Container-Contents";
+    r.layoutMode = "HORIZONTAL"; r.primaryAxisSizingMode = "AUTO"; r.counterAxisSizingMode = "AUTO"; r.fills = [];
+    if (header) {
+      r.strokes = [{ type: "SOLID", color: hexToRgb(st.headerBorder) }];
+      r.strokeTopWeight = 0; r.strokeLeftWeight = 0; r.strokeRightWeight = 0; r.strokeBottomWeight = 1;
+      r.strokeAlign = "INSIDE";
+    }
+    for (var i = 0; i < cells.length; i++) {
+      var c = figma.createFrame();
+      c.name = "Container-Description"; c.layoutMode = "HORIZONTAL"; c.fills = [];
+      c.primaryAxisSizingMode = "FIXED"; c.counterAxisSizingMode = "AUTO";
+      c.paddingTop = c.paddingBottom = c.paddingLeft = c.paddingRight = 12;
+      c.resize(st.columns[i], 45);
+      var t = await textNode(cells[i] || " ", header ? "Bold" : "Medium", header ? st.headerColor : st.bodyColor);
+      t.fontSize = 14; t.lineHeight = { value: 21, unit: "PIXELS" };
+      c.appendChild(t);
+      t.layoutGrow = 1; t.textAutoResize = "HEIGHT";
+      r.appendChild(c);
+    }
+    table.appendChild(r);
+  }
+  await row(spec.header, true);
+  var rows = spec.rows.length ? spec.rows : [[spec.empty, " ", " "]];
+  for (var k = 0; k < rows.length; k++) await row(rows[k], false);
+  return tb;
+}
+
+async function reviewSection(params) {
+  var page = await figma.getNodeByIdAsync(params.pageId);
+  if (!params.dryRun) {
+    if (!page || page.type !== "PAGE") throw new Error("Page not found: " + params.pageId);
+    if (!isReviewPageName(page.name)) throw new Error("Refused: target page '" + page.name + "' is not a review page. Nothing written.");
+    await page.loadAsync();
+  }
+  var L = params.layout;
+  var asSrc = await figma.getNodeByIdAsync(params.asIs);
+  if (!asSrc) throw new Error("Source not found: " + params.asIs);
+  await pageOf(asSrc);
+  var srcTexts = asSrc.type === "TEXT" ? [asSrc] : asSrc.findAllWithCriteria({ types: ["TEXT"] });
+  var want = {};
+  params.edits.forEach(function (e) { want[normText(e.before)] = e.after; });
+  var hits = {};
+  srcTexts.forEach(function (t) { var k = normText(t.characters); if (k in want) hits[k] = (hits[k] || 0) + 1; });
+  var missing = params.edits.filter(function (e) { return !hits[normText(e.before)]; }).map(function (e) { return e.before; });
+  var w = asSrc.width, h = asSrc.height;
+  if (params.dryRun) {
+    var n = 0; for (var k in hits) n += hits[k];
+    var tableH = 24 * 2 + 30 + 16 + 45 * (1 + Math.max(1, params.table.rows.length));
+    var tw = params.style.table.columns.reduce(function (a, b) { return a + b; }, 0) + 48;
+    return { dryRun: true, name: params.name, width: L.pad + w + L.gap + w + L.gap + tw + L.pad,
+             height: L.top + Math.max(h, tableH) + L.pad, changed: n, missing: missing };
+  }
+  var section = figma.createSection();
+  page.appendChild(section);
+  section.name = params.name;
+  section.x = params.x; section.y = params.y;
+  var fills = [];
+  for (var f = 0; f < (params.style.sectionFills || []).length; f++) fills.push(await resolvePaint(params.style.sectionFills[f]));
+  section.fills = fills;
+
+  var asIs = asSrc.clone(); section.appendChild(asIs); asIs.x = L.pad; asIs.y = L.top;
+  var toBe = asSrc.clone(); section.appendChild(toBe); toBe.x = L.pad + w + L.gap; toBe.y = L.top;
+  var changed = 0, failed = [];
+  var texts = toBe.type === "TEXT" ? [toBe] : toBe.findAllWithCriteria({ types: ["TEXT"] });
+  for (var i = 0; i < texts.length; i++) {
+    var t = texts[i], key = normText(t.characters);
+    if (!(key in want)) continue;
+    if (!insideNode(t, section)) throw new Error("Refused: text outside the new section");
+    try { await writeText(t, want[key]); await addPinkFill(t, params.pink); changed++; }
+    catch (e) { failed.push({ text: key, error: errMsg(e) }); }
+  }
+  var badges = [];
+  var pairs = [[params.badges.neutral, asIs], [params.badges.positive, toBe]];
+  for (var b = 0; b < pairs.length; b++) {
+    var r = await makeBadge(pairs[b][0], section);
+    r.node.x = pairs[b][1].x + (pairs[b][1].width - r.node.width) / 2;
+    r.node.y = L.badgeY;
+    badges.push(r.how);
+  }
+  var tb = await buildTable(params.table, params.style.table);
+  section.appendChild(tb);
+  tb.x = toBe.x + toBe.width + L.gap; tb.y = L.top;
+  var right = tb.x + tb.width, bottom = Math.max(toBe.y + toBe.height, tb.y + tb.height);
+  section.resizeWithoutConstraints(right + L.pad, bottom + L.pad);
+  return { sectionId: section.id, name: section.name, width: section.width, height: section.height,
+           asIsId: asIs.id, toBeId: toBe.id, changed: changed, missing: missing, failed: failed, badges: badges };
+}
+
+async function inspectPaints(params) {
+  var node = await figma.getNodeByIdAsync(params.nodeId);
+  if (!node) throw new Error("Node not found: " + params.nodeId);
+  async function one(paints) {
+    var out = [];
+    if (!paints || paints === figma.mixed) return out;
+    for (var i = 0; i < paints.length; i++) {
+      var p = paints[i], o = { type: p.type, visible: p.visible !== false, opacity: p.opacity == null ? 1 : p.opacity };
+      if (p.type === "SOLID") o.color = "#" + ["r", "g", "b"].map(function (c) { var x = Math.round(p.color[c] * 255).toString(16); return x.length < 2 ? "0" + x : x; }).join("");
+      var bv = p.boundVariables && p.boundVariables.color;
+      if (bv) {
+        var v = await figma.variables.getVariableByIdAsync(bv.id);
+        var col = v ? await figma.variables.getVariableCollectionByIdAsync(v.variableCollectionId) : null;
+        o.variable = { id: bv.id, key: v ? v.key : null, name: v ? v.name : null, collection: col ? col.name : null, remote: v ? v.remote : null };
+      }
+      out.push(o);
+    }
+    return out;
+  }
+  return { id: node.id, name: node.name, type: node.type, fills: await one(node.fills), strokes: await one(node.strokes),
+           width: node.width, height: node.height };
 }

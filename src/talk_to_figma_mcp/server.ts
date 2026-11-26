@@ -2933,6 +2933,9 @@ type FigmaCommand =
   | "set_hyperlink"
   | "set_text_range_fills"
   | "export_text_tree"
+  | "review_page"
+  | "review_section"
+  | "inspect_paints"
   | "create_variables";
 
 
@@ -3888,7 +3891,7 @@ server.tool(
 
 server.tool(
   "export_text_tree",
-  "Dump every TEXT under a page, section or node to a JSON file, with context for copy checks: nodeId, text, layer name, the TEXT property it is bound to, the nearest instance (its component and component set), the instance chain, the parent frame, the ancestor name path, position, its visible solid fills (#rrggbb, the union over text ranges), and the top-level frame (a direct child of the page or of a section) with its section (name and id) and x. Hidden texts are left out unless includeHidden. includeTopPrefixes keeps only top-level frames whose names start with one of them. The server pages through the top-level frames itself and writes the whole result to outputPath; only a summary comes back. expectFileName stops before writing when the open file has another name.",
+  "Dump every TEXT under a page, section or node to a JSON file, with context for copy checks: nodeId, text, layer name, the TEXT property it is bound to, the nearest instance (its component and component set), the instance chain, the parent frame, the ancestor name path, position, its visible solid fills (#rrggbb, the union over text ranges), whether the outermost instance overrides its characters (textOverride), and the top-level frame (a direct child of the page or of a section) with its section (name and id) and x. Hidden texts are left out unless includeHidden. includeTopPrefixes keeps only top-level frames whose names start with one of them. The server pages through the top-level frames itself and writes the whole result to outputPath; only a summary comes back. expectFileName stops before writing when the open file has another name.",
   {
     nodeId: z.string().optional().describe("Page, section or node to read (default: current page)"),
     outputPath: z.string().describe("Absolute path of the JSON file to write"),
@@ -3950,6 +3953,67 @@ server.tool(
       });
     } catch (error) {
       return errorResult("Error exporting text tree: ", error);
+    }
+  }
+);
+
+server.tool(
+  "inspect_paints",
+  "Read one node's own fills and strokes (not its children): hex, opacity, visibility and the bound color variable (id, key, name, collection, remote). Read-only.",
+  { nodeId: z.string().describe("Node to read") },
+  async ({ nodeId }: any) => {
+    try {
+      return jsonResult(await sendCommandToFigma("inspect_paints", { nodeId }));
+    } catch (error) {
+      return errorResult("Error inspecting paints: ", error);
+    }
+  }
+);
+
+server.tool(
+  "build_review_listing",
+  "Build an as-is / to-be review page from a plan JSON (E-37). Writes only to a NEW page whose name starts with 'UX 라이팅 수정 건' (refuses an existing name or any other page). Source frames are only cloned. Per section: as-is and to-be clones, text edits on the to-be clone with an extra #FF00FF fill on each changed text, as-is/to-be badges (component key, else seed clone), and a 'same fix needed' table. The server lays sections out row by row (gapX within a row, gapY between rows) and writes per-section results to resultPath. dryRun checks sources and edits without writing.",
+  {
+    planPath: z.string().describe("Absolute path of the plan JSON (listing-plan.json)"),
+    resultPath: z.string().describe("Absolute path of the result JSON to write"),
+    expectFileName: z.string().optional().describe("Abort when the open file's name differs"),
+    dryRun: z.boolean().optional().describe("Check only, write nothing (default false)"),
+  },
+  async ({ planPath, resultPath, expectFileName, dryRun }: any) => {
+    try {
+      for (const p of [planPath, resultPath]) {
+        if (!isAbsolute(p) || !p.endsWith(".json")) return errorResult("Bad path: ", `${p} — give an absolute path ending in .json`);
+      }
+      const plan = JSON.parse(await readFile(resolve(planPath), "utf8"));
+      const page: any = await sendCommandToFigma("review_page", { pageName: plan.pageName, dryRun: !!dryRun });
+      if (expectFileName && page.fileName !== expectFileName) {
+        return errorResult("Wrong file: ", `open file is "${page.fileName}", expected "${expectFileName}". Nothing written.`);
+      }
+      const results: any[] = [];
+      let y = plan.layout.startY || 0;
+      for (const row of plan.rows) {
+        let x = plan.layout.startX || 0;
+        let rowH = 0;
+        for (const sec of row) {
+          const r: any = await sendCommandToFigma("review_section", {
+            ...sec, pageId: page.pageId, dryRun: !!dryRun, x, y,
+            layout: plan.layout, style: plan.style, badges: plan.badges, pink: plan.pink,
+          }, 60000);
+          results.push({ ...r, x, y });
+          x += r.width + plan.layout.gapX;
+          rowH = Math.max(rowH, r.height);
+        }
+        y += rowH + plan.layout.gapY;
+      }
+      const out = { dryRun: !!dryRun, fileName: page.fileName, pageId: page.pageId || null, pageName: plan.pageName, sections: results };
+      await mkdir(dirname(resolve(resultPath)), { recursive: true });
+      await writeFile(resolve(resultPath), JSON.stringify(out, null, 1), "utf8");
+      const missing = results.reduce((n, r) => n + (r.missing || []).length, 0);
+      const failed = results.reduce((n, r) => n + (r.failed || []).length, 0);
+      return jsonResult({ dryRun: !!dryRun, pageId: out.pageId, pageName: out.pageName, sections: results.length,
+        changed: results.reduce((n, r) => n + (r.changed || 0), 0), missing, failed, resultPath });
+    } catch (error) {
+      return errorResult("Error building review listing: ", error);
     }
   }
 );
