@@ -9094,7 +9094,8 @@ async function exportTextTree(params) {
   function childLike(parent, node) {
     var kids = parent.children || [];
     var idx = node.parent.children.indexOf(node);
-    if (kids[idx] && kids[idx].name === node.name && kids[idx].type === node.type) return kids[idx];
+    if (kids[idx] && kids[idx].type === node.type && (kids[idx].name === node.name || node.type === "INSTANCE")) return kids[idx];
+    // ↑ 인스턴스는 변이를 바꾸면 레이어 이름이 바뀌기도 한다('Tab 2' → '.Bottom Navigation Bar/Resource/Tab') — 순번·종류로
     for (var k = 0; k < kids.length; k++) if (kids[k].name === node.name && kids[k].type === node.type) return kids[k];
     return null;
   }
