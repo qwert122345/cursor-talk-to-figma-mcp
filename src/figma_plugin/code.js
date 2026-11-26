@@ -9668,10 +9668,12 @@ async function writeText(node, text) {
   await setCharacters(node, text);
 }
 
-async function makeBadge(spec, section) {
-  // keyError: 키 경로가 실패한 단계와 피그마가 준 메시지. 결과 파일에 남겨 원인을 본다(성공하면 null)
+async function makeBadge(spec, section, useKey) {
+  // keyError: 키 경로가 실패한 단계와 피그마가 준 메시지. 결과 파일에 남겨 원인을 본다(성공·건너뜀이면 null)
+  // useKey false(설정 badges.useKey): 키 가져오기를 시도하지 않고 시드 복제만 — 건너뛴 것은 실패가 아니다
   var inst = null, how = null, keyError = null, step = "import";
-  if (!spec.key) keyError = "no key in config";
+  if (!useKey) { /* 건너뜀 */ }
+  else if (!spec.key) keyError = "no key in config";
   else try {
     var comp = await figma.importComponentByKeyAsync(spec.key);
     step = "createInstance";
@@ -9688,14 +9690,14 @@ async function makeBadge(spec, section) {
     if (inst) { try { inst.remove(); } catch (e2) {} }
     inst = null;
   }
-  if (!inst && spec.seedId) {
+  if (!inst && !spec.seedId) throw new Error("Badge: no seedId for " + spec.label + (useKey ? " (key — " + keyError + ")" : " (key import is off)"));
+  if (!inst) {
     var seed = await figma.getNodeByIdAsync(spec.seedId);
     if (!seed) throw new Error("Badge seed not found: " + spec.seedId);
     await pageOf(seed);
     inst = seed.clone();
     how = "seed";
   }
-  if (!inst) throw new Error("Badge: neither key nor seed worked for " + spec.label + " (key — " + keyError + ")");
   section.appendChild(inst);
   return { node: inst, how: how, keyError: keyError };
 }
@@ -9799,7 +9801,7 @@ async function reviewSection(params) {
   var badges = [], badgeErrors = [];
   var pairs = [[params.badges.neutral, asIs], [params.badges.positive, toBe]];
   for (var b = 0; b < pairs.length; b++) {
-    var r = await makeBadge(pairs[b][0], section);
+    var r = await makeBadge(pairs[b][0], section, params.badges.useKey !== false);
     r.node.x = pairs[b][1].x + (pairs[b][1].width - r.node.width) / 2;
     r.node.y = L.badgeY;
     badges.push(r.how);

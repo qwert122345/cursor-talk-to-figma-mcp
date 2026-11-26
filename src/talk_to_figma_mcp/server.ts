@@ -3972,7 +3972,7 @@ server.tool(
 
 server.tool(
   "build_review_listing",
-  "Build an as-is / to-be review page from a plan JSON (E-37). Writes only to a NEW page whose name starts with 'UX 라이팅 수정 건' (refuses an existing name or any other page). Source frames are only cloned. Per section: as-is and to-be clones, text edits on the to-be clone with an extra #FF00FF fill on each changed text, as-is/to-be badges (component key, else seed clone), and a 'same fix needed' table. The server lays sections out row by row (gapX within a row, gapY between rows) and writes per-section results to resultPath. dryRun checks sources and edits without writing.",
+  "Build an as-is / to-be review page from a plan JSON (E-37). Writes only to a NEW page whose name starts with 'UX 라이팅 수정 건' (refuses an existing name or any other page). Source frames are only cloned. Per section: as-is and to-be clones, text edits on the to-be clone with an extra #FF00FF fill on each changed text, as-is/to-be badges (component key, else seed clone; badges.useKey false skips the key and only clones the seed), and a 'same fix needed' table. The server lays sections out row by row (gapX within a row, gapY between rows) and writes per-section results to resultPath. dryRun checks sources and edits without writing.",
   {
     planPath: z.string().describe("Absolute path of the plan JSON (listing-plan.json)"),
     resultPath: z.string().describe("Absolute path of the result JSON to write"),
