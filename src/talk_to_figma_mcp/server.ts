@@ -3972,40 +3972,53 @@ server.tool(
 
 server.tool(
   "build_review_listing",
-  "Build an as-is / to-be review page from a plan JSON (E-37). Writes only to a NEW page whose name starts with 'UX 라이팅 수정 건' (refuses an existing name or any other page). Source frames are only cloned. Per section: as-is and to-be clones, text edits on the to-be clone with an extra #FF00FF fill on each changed text, as-is/to-be badges (component key, else seed clone; badges.useKey false skips the key and only clones the seed), and a 'same fix needed' table. The server lays sections out row by row (gapX within a row, gapY between rows) and writes per-section results to resultPath. dryRun checks sources and edits without writing.",
+  "Build an as-is / to-be review page from a plan JSON (E-37). Writes only to a NEW page whose name starts with 'UX 라이팅 수정 건' (refuses an existing name or any other page). Source frames are only cloned. Per section: as-is and to-be clones, text edits on the to-be clone with an extra #FF00FF fill on each changed text, as-is/to-be badges (component key, else seed clone; badges.useKey false skips the key and only clones the seed), and a 'same fix needed' table. protectedPageIds is required (the call is refused without it): before every write the plugin finds the page of the node it writes and stops at the first one on a protected page — sections built until then are kept in resultPath, the failing one as aborted. The server lays sections out row by row (gapX within a row, gapY between rows) and writes per-section results to resultPath. dryRun checks sources and edits without writing.",
   {
     planPath: z.string().describe("Absolute path of the plan JSON (listing-plan.json)"),
     resultPath: z.string().describe("Absolute path of the result JSON to write"),
     expectFileName: z.string().optional().describe("Abort when the open file's name differs"),
     dryRun: z.boolean().optional().describe("Check only, write nothing (default false)"),
+    protectedPageIds: z.array(z.string()).min(1).describe("Page ids that must never be written (source UI page, guide page, seed page). Required"),
   },
-  async ({ planPath, resultPath, expectFileName, dryRun }: any) => {
+  async ({ planPath, resultPath, expectFileName, dryRun, protectedPageIds }: any) => {
     try {
+      if (!Array.isArray(protectedPageIds) || !protectedPageIds.length) {
+        return errorResult("Refused: ", "protectedPageIds is required (source UI page, guide page, seed page). Nothing written.");
+      }
       for (const p of [planPath, resultPath]) {
         if (!isAbsolute(p) || !p.endsWith(".json")) return errorResult("Bad path: ", `${p} — give an absolute path ending in .json`);
       }
       const plan = JSON.parse(await readFile(resolve(planPath), "utf8"));
-      const page: any = await sendCommandToFigma("review_page", { pageName: plan.pageName, dryRun: !!dryRun });
+      const page: any = await sendCommandToFigma("review_page", { pageName: plan.pageName, dryRun: !!dryRun, protectedPageIds });
       if (expectFileName && page.fileName !== expectFileName) {
         return errorResult("Wrong file: ", `open file is "${page.fileName}", expected "${expectFileName}". Nothing written.`);
       }
       const results: any[] = [];
+      let aborted: any = null;   // 가드 위반·오류: 그 섹션에서 멈추고 지금까지 만든 것은 결과 파일에 남긴다
       let y = plan.layout.startY || 0;
       for (const row of plan.rows) {
         let x = plan.layout.startX || 0;
         let rowH = 0;
         for (const sec of row) {
-          const r: any = await sendCommandToFigma("review_section", {
-            ...sec, pageId: page.pageId, dryRun: !!dryRun, x, y,
-            layout: plan.layout, style: plan.style, badges: plan.badges, pink: plan.pink,
-          }, 60000);
-          results.push({ ...r, x, y });
-          x += r.width + plan.layout.gapX;
-          rowH = Math.max(rowH, r.height);
+          try {
+            const r: any = await sendCommandToFigma("review_section", {
+              ...sec, pageId: page.pageId, dryRun: !!dryRun, x, y, protectedPageIds,
+              layout: plan.layout, style: plan.style, badges: plan.badges, pink: plan.pink,
+            }, 60000);
+            results.push({ ...r, x, y });
+            x += r.width + plan.layout.gapX;
+            rowH = Math.max(rowH, r.height);
+          } catch (e: any) {
+            aborted = { name: sec.name, asIs: sec.asIs, error: String(e && e.message ? e.message : e) };
+            results.push({ ...aborted, aborted: true, x, y });
+            break;
+          }
         }
+        if (aborted) break;
         y += rowH + plan.layout.gapY;
       }
-      const out = { dryRun: !!dryRun, fileName: page.fileName, pageId: page.pageId || null, pageName: plan.pageName, sections: results };
+      const out = { dryRun: !!dryRun, fileName: page.fileName, pageId: page.pageId || null, pageName: plan.pageName,
+        protectedPageIds, aborted, sections: results };
       await mkdir(dirname(resolve(resultPath)), { recursive: true });
       await writeFile(resolve(resultPath), JSON.stringify(out, null, 1), "utf8");
       const missing = results.reduce((n, r) => n + (r.missing || []).length, 0);
@@ -4013,6 +4026,9 @@ server.tool(
       // 배지 키 경로가 실패한 이유(메시지별 횟수). 섹션별 값은 resultPath 의 badgeErrors
       const badgeKeyErrors: Record<string, number> = {};
       for (const r of results) for (const e of r.badgeErrors || []) if (e) badgeKeyErrors[e] = (badgeKeyErrors[e] || 0) + 1;
+      if (aborted) {
+        return errorResult("Aborted: ", `section "${aborted.name}" — ${aborted.error}. ${results.length - 1} section(s) built before it are in ${resultPath}.`);
+      }
       return jsonResult({ dryRun: !!dryRun, pageId: out.pageId, pageName: out.pageName, sections: results.length,
         changed: results.reduce((n, r) => n + (r.changed || 0), 0), missing, failed, badgeKeyErrors, resultPath });
     } catch (error) {

@@ -9628,15 +9628,33 @@ async function pageOf(node) {
   if (p && p.loadAsync) await p.loadAsync();
   return p;
 }
+// 원본 쓰기 가드(ux-check 가드 ①): 쓰는 노드마다 속한 페이지 id 를 구해 보호 목록에 있으면 멈춘다.
+// 이름 규칙(isReviewPageName)은 사람이 페이지 이름을 바꾸면 흔들려서 id 로 한 번 더 막는다.
+function pageIdOf(node) {
+  var p = node;
+  while (p && p.type !== "PAGE") p = p.parent;
+  return p ? p.id : null;
+}
+function guardWrite(node, protectedPageIds, what) {
+  var pid = pageIdOf(node);
+  if (!pid) throw new Error("Refused: " + what + " — node is not on a page. Stopped.");
+  if ((protectedPageIds || []).indexOf(pid) >= 0) throw new Error("Refused: " + what + " on protected page " + pid + ". Stopped.");
+}
+function needProtected(params) {
+  if (!params.protectedPageIds || !params.protectedPageIds.length) throw new Error("Refused: protectedPageIds is required. Nothing written.");
+  return params.protectedPageIds;
+}
 
 async function reviewPage(params) {
   var name = params.pageName;
+  var prot = needProtected(params);
   if (!isReviewPageName(name)) throw new Error("Refused: page name must start with '" + REVIEW_PAGE_PREFIX + "': " + name);
   var existing = figma.root.children.filter(function (p) { return p.name === name; });
   if (existing.length) throw new Error("Refused: a page named '" + name + "' already exists (" + existing[0].id + "). Nothing written.");
   if (params.dryRun) return { fileName: figma.root.name, dryRun: true, wouldCreate: name };
   var page = figma.createPage();
   page.name = name;
+  guardWrite(page, prot, "new page");
   return { fileName: figma.root.name, pageId: page.id, name: page.name };
 }
 
@@ -9668,7 +9686,7 @@ async function writeText(node, text) {
   await setCharacters(node, text);
 }
 
-async function makeBadge(spec, section, useKey) {
+async function makeBadge(spec, section, useKey, prot) {
   // keyError: 키 경로가 실패한 단계와 피그마가 준 메시지. 결과 파일에 남겨 원인을 본다(성공·건너뜀이면 null)
   // useKey false(설정 badges.useKey): 키 가져오기를 시도하지 않고 시드 복제만 — 건너뛴 것은 실패가 아니다
   var inst = null, how = null, keyError = null, step = "import";
@@ -9695,10 +9713,12 @@ async function makeBadge(spec, section, useKey) {
     var seed = await figma.getNodeByIdAsync(spec.seedId);
     if (!seed) throw new Error("Badge seed not found: " + spec.seedId);
     await pageOf(seed);
+    guardWrite(figma.currentPage, prot, "badge clone (current page)");   // clone() 은 먼저 현재 페이지에 생긴다
     inst = seed.clone();
     how = "seed";
   }
   section.appendChild(inst);
+  guardWrite(inst, prot, "badge");
   return { node: inst, how: how, keyError: keyError };
 }
 
@@ -9755,11 +9775,16 @@ async function buildTable(spec, st) {
 }
 
 async function reviewSection(params) {
+  var prot = needProtected(params);
   var page = await figma.getNodeByIdAsync(params.pageId);
   if (!params.dryRun) {
     if (!page || page.type !== "PAGE") throw new Error("Page not found: " + params.pageId);
     if (!isReviewPageName(page.name)) throw new Error("Refused: target page '" + page.name + "' is not a review page. Nothing written.");
+    guardWrite(page, prot, "target page");
     await page.loadAsync();
+    // clone() 은 현재 페이지에 먼저 생기므로 쓰기 전에 새 페이지로 옮겨 둔다(원본 페이지에 잠깐이라도 생기지 않게)
+    if (figma.currentPage.id !== page.id) await figma.setCurrentPageAsync(page);
+    guardWrite(figma.currentPage, prot, "current page");
   }
   var L = params.layout;
   var asSrc = await figma.getNodeByIdAsync(params.asIs);
@@ -9781,27 +9806,30 @@ async function reviewSection(params) {
   }
   var section = figma.createSection();
   page.appendChild(section);
+  guardWrite(section, prot, "section");
   section.name = params.name;
   section.x = params.x; section.y = params.y;
   var fills = [];
   for (var f = 0; f < (params.style.sectionFills || []).length; f++) fills.push(await resolvePaint(params.style.sectionFills[f]));
   section.fills = fills;
 
-  var asIs = asSrc.clone(); section.appendChild(asIs); asIs.x = L.pad; asIs.y = L.top;
-  var toBe = asSrc.clone(); section.appendChild(toBe); toBe.x = L.pad + w + L.gap; toBe.y = L.top;
+  guardWrite(figma.currentPage, prot, "clone (current page)");
+  var asIs = asSrc.clone(); section.appendChild(asIs); guardWrite(asIs, prot, "as-is clone"); asIs.x = L.pad; asIs.y = L.top;
+  var toBe = asSrc.clone(); section.appendChild(toBe); guardWrite(toBe, prot, "to-be clone"); toBe.x = L.pad + w + L.gap; toBe.y = L.top;
   var changed = 0, failed = [];
   var texts = toBe.type === "TEXT" ? [toBe] : toBe.findAllWithCriteria({ types: ["TEXT"] });
   for (var i = 0; i < texts.length; i++) {
     var t = texts[i], key = normText(t.characters);
     if (!(key in want)) continue;
     if (!insideNode(t, section)) throw new Error("Refused: text outside the new section");
+    guardWrite(t, prot, "text");
     try { await writeText(t, want[key]); await addPinkFill(t, params.pink); changed++; }
     catch (e) { failed.push({ text: key, error: errMsg(e) }); }
   }
   var badges = [], badgeErrors = [];
   var pairs = [[params.badges.neutral, asIs], [params.badges.positive, toBe]];
   for (var b = 0; b < pairs.length; b++) {
-    var r = await makeBadge(pairs[b][0], section, params.badges.useKey !== false);
+    var r = await makeBadge(pairs[b][0], section, params.badges.useKey !== false, prot);
     r.node.x = pairs[b][1].x + (pairs[b][1].width - r.node.width) / 2;
     r.node.y = L.badgeY;
     badges.push(r.how);
@@ -9809,6 +9837,7 @@ async function reviewSection(params) {
   }
   var tb = await buildTable(params.table, params.style.table);
   section.appendChild(tb);
+  guardWrite(tb, prot, "table");
   tb.x = toBe.x + toBe.width + L.gap; tb.y = L.top;
   var right = tb.x + tb.width, bottom = Math.max(toBe.y + toBe.height, tb.y + tb.height);
   section.resizeWithoutConstraints(right + L.pad, bottom + L.pad);
