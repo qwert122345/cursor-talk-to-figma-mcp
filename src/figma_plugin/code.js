@@ -9080,35 +9080,58 @@ async function exportTextTree(params) {
     return out;
   }
 
-  // 화면에 놓인(가장 바깥) 인스턴스가 이 글자를 바꿨나: 메인 컴포넌트에서 같은 자리 TEXT 를 찾아 글자를 비교한다.
-  // TEXT 컴포넌트 속성으로 넣은 글자도 메인의 기본 글자와 다르면 바꾼 것. 라이브러리(원격) 메인은 노드 id 가 달라서
-  // 인스턴스→텍스트 경로를 같은 순번·이름으로 따라 내려간다. 못 찾으면 null(판단 못 함).
+  // 화면에 놓인(가장 바깥) 인스턴스가 이 글자를 바꿨나 — 덮어쓰기 기록(overrides)이 아니라 실제 글자로 판단한다.
+  // 메인 컴포넌트에서 같은 자리 TEXT 를 찾아 글자가 다르면 true. TEXT 속성으로 넣은 글자도 기본 글자와 다르면 바꾼 것.
+  // 라이브러리(원격) 메인은 노드 id 가 달라 경로(순번·이름)로 따라간다. 안쪽 인스턴스의 변이를 바꿔 구조가 달라지면
+  // 그 아래는 같은 이름의 TEXT 로 찾고, 그래도 없으면 지금 연결된(바뀐 변이) 메인에서 같은 자리를 찾는다. 못 찾으면 null.
   var mainOf = {};
-  async function overridesText(inst, t) {
+  async function mainComp(inst) {
     if (!(inst.id in mainOf)) {
       try { mainOf[inst.id] = await inst.getMainComponentAsync(); } catch (e) { mainOf[inst.id] = null; }
     }
-    var main = mainOf[inst.id];
-    if (main) {
-      var chain = [];
-      for (var n = t; n && n !== inst; n = n.parent) chain.unshift(n);
-      var cur = main, ok = true;
-      for (var c = 0; c < chain.length && ok; c++) {
-        var node = chain[c], kids = cur.children || [];
-        var idx = node.parent.children.indexOf(node);
-        var cand = kids[idx] && kids[idx].name === node.name && kids[idx].type === node.type ? kids[idx] : null;
-        if (!cand) {
-          for (var k = 0; k < kids.length; k++) if (kids[k].name === node.name && kids[k].type === node.type) { cand = kids[k]; break; }
-        }
-        if (cand) cur = cand; else ok = false;
-      }
-      if (ok && cur.type === "TEXT") return cur.characters !== t.characters;
-    }
-    var ov = inst.overrides || [];
-    for (var q = 0; q < ov.length; q++) {
-      if (ov[q].id === t.id && ov[q].overriddenFields.indexOf("characters") >= 0) return true;
-    }
+    return mainOf[inst.id];
+  }
+  function childLike(parent, node) {
+    var kids = parent.children || [];
+    var idx = node.parent.children.indexOf(node);
+    if (kids[idx] && kids[idx].name === node.name && kids[idx].type === node.type) return kids[idx];
+    for (var k = 0; k < kids.length; k++) if (kids[k].name === node.name && kids[k].type === node.type) return kids[k];
     return null;
+  }
+  function textByName(root, name) {
+    if (!("findAll" in root)) return null;
+    var hits = root.findAll(function (n) { return n.type === "TEXT" && n.name === name; });
+    return hits.length === 1 ? hits[0] : null;
+  }
+  async function twinIn(main, from, t) {
+    // from(인스턴스) 아래 t 까지의 경로를 main 에서 따라간다
+    var chain = [];
+    for (var n = t; n && n !== from; n = n.parent) chain.unshift(n);
+    var cur = main;
+    for (var c = 0; c < chain.length; c++) {
+      var cand = childLike(cur, chain[c]);
+      if (!cand) {
+        // 구조가 달라진 곳(바뀐 변이 등): 지금까지 따라온 노드 아래에서 같은 이름의 TEXT 하나
+        return textByName(cur, t.name);
+      }
+      cur = cand;
+    }
+    return cur.type === "TEXT" ? cur : null;
+  }
+  async function overridesText(inst, t) {
+    var main = await mainComp(inst);
+    var twin = main ? await twinIn(main, inst, t) : null;
+    if (!twin) {
+      // 안쪽에서 가장 가까운 인스턴스의 지금 연결된 메인(바뀐 변이 기준)
+      for (var n = t.parent; n && n !== inst.parent; n = n.parent) {
+        if (n.type === "INSTANCE") {
+          var m = await mainComp(n);
+          twin = m ? await twinIn(m, n, t) : null;
+          break;
+        }
+      }
+    }
+    return twin ? twin.characters !== t.characters : null;
   }
 
   var texts = [];
