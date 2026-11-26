@@ -9080,23 +9080,35 @@ async function exportTextTree(params) {
     return out;
   }
 
-  // 화면에 놓인(가장 바깥) 인스턴스가 이 글자를 바꿨나: 메인 컴포넌트의 같은 자리 TEXT 와 글자가 다르면 true.
-  // TEXT 컴포넌트 속성으로 넣은 글자도 메인의 기본 글자와 다르면 바꾼 것이다. 같은 자리를 못 찾으면 overrides 목록으로.
+  // 화면에 놓인(가장 바깥) 인스턴스가 이 글자를 바꿨나: 메인 컴포넌트에서 같은 자리 TEXT 를 찾아 글자를 비교한다.
+  // TEXT 컴포넌트 속성으로 넣은 글자도 메인의 기본 글자와 다르면 바꾼 것. 라이브러리(원격) 메인은 노드 id 가 달라서
+  // 인스턴스→텍스트 경로를 같은 순번·이름으로 따라 내려간다. 못 찾으면 null(판단 못 함).
+  var mainOf = {};
   async function overridesText(inst, t) {
-    var pre = "I" + inst.id + ";";
-    if (t.id.indexOf(pre) === 0) {
-      var rest = t.id.slice(pre.length);
-      var mid = rest.indexOf(";") >= 0 ? "I" + rest : rest;
-      try {
-        var twin = await figma.getNodeByIdAsync(mid);
-        if (twin && twin.type === "TEXT") return twin.characters !== t.characters;
-      } catch (e) { /* 아래로 */ }
+    if (!(inst.id in mainOf)) {
+      try { mainOf[inst.id] = await inst.getMainComponentAsync(); } catch (e) { mainOf[inst.id] = null; }
+    }
+    var main = mainOf[inst.id];
+    if (main) {
+      var chain = [];
+      for (var n = t; n && n !== inst; n = n.parent) chain.unshift(n);
+      var cur = main, ok = true;
+      for (var c = 0; c < chain.length && ok; c++) {
+        var node = chain[c], kids = cur.children || [];
+        var idx = node.parent.children.indexOf(node);
+        var cand = kids[idx] && kids[idx].name === node.name && kids[idx].type === node.type ? kids[idx] : null;
+        if (!cand) {
+          for (var k = 0; k < kids.length; k++) if (kids[k].name === node.name && kids[k].type === node.type) { cand = kids[k]; break; }
+        }
+        if (cand) cur = cand; else ok = false;
+      }
+      if (ok && cur.type === "TEXT") return cur.characters !== t.characters;
     }
     var ov = inst.overrides || [];
     for (var q = 0; q < ov.length; q++) {
       if (ov[q].id === t.id && ov[q].overriddenFields.indexOf("characters") >= 0) return true;
     }
-    return t.componentPropertyReferences && t.componentPropertyReferences.characters ? null : false;
+    return null;
   }
 
   var texts = [];
