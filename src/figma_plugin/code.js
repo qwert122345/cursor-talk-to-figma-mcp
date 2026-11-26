@@ -9018,14 +9018,14 @@ async function exportTextTree(params) {
 
   // Top-level frames: direct children of the root, and of sections inside it.
   var tops = [];
-  function collectTops(n, sectionName) {
+  function collectTops(n, sec) {
     if (!("children" in n)) return;
     n.children.forEach(function (c) {
-      if (c.type === "SECTION") collectTops(c, c.name);
-      else tops.push({ node: c, section: sectionName || null });
+      if (c.type === "SECTION") collectTops(c, c);
+      else tops.push({ node: c, section: sec ? sec.name : null, sectionId: sec ? sec.id : null });
     });
   }
-  if (root.type === "PAGE" || root.type === "SECTION") collectTops(root, root.type === "SECTION" ? root.name : null);
+  if (root.type === "PAGE" || root.type === "SECTION") collectTops(root, root.type === "SECTION" ? root : null);
   else tops.push({ node: root, section: null });
   var totalTops = tops.length;
   if (prefixes) {
@@ -9109,7 +9109,7 @@ async function exportTextTree(params) {
         x: Math.round(t.absoluteTransform[0][2]),
         y: Math.round(t.absoluteTransform[1][2]),
         fills: textFills(t),
-        topFrame: { id: top.id, name: top.name, section: slice[i].section, x: Math.round(top.absoluteTransform[0][2]) },
+        topFrame: { id: top.id, name: top.name, section: slice[i].section, sectionId: slice[i].sectionId || null, x: Math.round(top.absoluteTransform[0][2]) },
       });
     }
   }
