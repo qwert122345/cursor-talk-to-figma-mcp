@@ -9053,6 +9053,27 @@ async function exportTextTree(params) {
     return info;
   }
 
+  function hex2(v) { var h = Math.round(v * 255).toString(16); return h.length < 2 ? "0" + h : h; }
+  function solidHexes(paints, out) {
+    if (!paints || paints === figma.mixed) return;
+    for (var q = 0; q < paints.length; q++) {
+      var p = paints[q];
+      if (p.type !== "SOLID" || p.visible === false) continue;
+      var c = "#" + hex2(p.color.r) + hex2(p.color.g) + hex2(p.color.b);
+      if (out.indexOf(c) < 0) out.push(c);
+    }
+  }
+  // 보이는 단색 채우기(#rrggbb). 글자 범위마다 채우기가 다르면 범위들의 합집합
+  function textFills(t) {
+    var out = [];
+    if (t.fills !== figma.mixed) { solidHexes(t.fills, out); return out; }
+    try {
+      var segs = t.getStyledTextSegments(["fills"]);
+      for (var s = 0; s < segs.length; s++) solidHexes(segs[s].fills, out);
+    } catch (e) { /* ignore */ }
+    return out;
+  }
+
   var texts = [];
   for (var i = 0; i < slice.length; i++) {
     var top = slice[i].node;
@@ -9087,7 +9108,8 @@ async function exportTextTree(params) {
         path: path,
         x: Math.round(t.absoluteTransform[0][2]),
         y: Math.round(t.absoluteTransform[1][2]),
-        topFrame: { id: top.id, name: top.name, section: slice[i].section },
+        fills: textFills(t),
+        topFrame: { id: top.id, name: top.name, section: slice[i].section, x: Math.round(top.absoluteTransform[0][2]) },
       });
     }
   }

@@ -3888,7 +3888,7 @@ server.tool(
 
 server.tool(
   "export_text_tree",
-  "Dump every TEXT under a page, section or node to a JSON file, with context for copy checks: nodeId, text, layer name, the TEXT property it is bound to, the nearest instance (its component and component set), the instance chain, the parent frame, the ancestor name path, position, and the top-level frame (a direct child of the page or of a section) with its section. Hidden texts are left out unless includeHidden. includeTopPrefixes keeps only top-level frames whose names start with one of them. The server pages through the top-level frames itself and writes the whole result to outputPath; only a summary comes back. expectFileName stops before writing when the open file has another name.",
+  "Dump every TEXT under a page, section or node to a JSON file, with context for copy checks: nodeId, text, layer name, the TEXT property it is bound to, the nearest instance (its component and component set), the instance chain, the parent frame, the ancestor name path, position, its visible solid fills (#rrggbb, the union over text ranges), and the top-level frame (a direct child of the page or of a section) with its section and x. Hidden texts are left out unless includeHidden. includeTopPrefixes keeps only top-level frames whose names start with one of them. The server pages through the top-level frames itself and writes the whole result to outputPath; only a summary comes back. expectFileName stops before writing when the open file has another name.",
   {
     nodeId: z.string().optional().describe("Page, section or node to read (default: current page)"),
     outputPath: z.string().describe("Absolute path of the JSON file to write"),
