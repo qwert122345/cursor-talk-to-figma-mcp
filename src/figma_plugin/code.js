@@ -9080,12 +9080,23 @@ async function exportTextTree(params) {
     return out;
   }
 
-  function overridesText(inst, id) {
+  // 화면에 놓인(가장 바깥) 인스턴스가 이 글자를 바꿨나: 메인 컴포넌트의 같은 자리 TEXT 와 글자가 다르면 true.
+  // TEXT 컴포넌트 속성으로 넣은 글자도 메인의 기본 글자와 다르면 바꾼 것이다. 같은 자리를 못 찾으면 overrides 목록으로.
+  async function overridesText(inst, t) {
+    var pre = "I" + inst.id + ";";
+    if (t.id.indexOf(pre) === 0) {
+      var rest = t.id.slice(pre.length);
+      var mid = rest.indexOf(";") >= 0 ? "I" + rest : rest;
+      try {
+        var twin = await figma.getNodeByIdAsync(mid);
+        if (twin && twin.type === "TEXT") return twin.characters !== t.characters;
+      } catch (e) { /* 아래로 */ }
+    }
     var ov = inst.overrides || [];
     for (var q = 0; q < ov.length; q++) {
-      if (ov[q].id === id && ov[q].overriddenFields.indexOf("characters") >= 0) return true;
+      if (ov[q].id === t.id && ov[q].overriddenFields.indexOf("characters") >= 0) return true;
     }
-    return false;
+    return t.componentPropertyReferences && t.componentPropertyReferences.characters ? null : false;
   }
 
   var texts = [];
@@ -9124,7 +9135,7 @@ async function exportTextTree(params) {
         y: Math.round(t.absoluteTransform[1][2]),
         fills: textFills(t),
         // 화면에 놓인(가장 바깥) 인스턴스에서 이 글자를 덮어썼나 — false 면 메인 컴포넌트 기본 글자
-        textOverride: instances.length ? overridesText(instances[0], t.id) : null,
+        textOverride: instances.length ? await overridesText(instances[0], t) : null,
         topFrame: { id: top.id, name: top.name, section: slice[i].section, sectionId: slice[i].sectionId || null, x: Math.round(top.absoluteTransform[0][2]) },
       });
     }
