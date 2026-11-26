@@ -3979,8 +3979,9 @@ server.tool(
     expectFileName: z.string().optional().describe("Abort when the open file's name differs"),
     dryRun: z.boolean().optional().describe("Check only, write nothing (default false)"),
     protectedPageIds: z.array(z.string()).min(1).describe("Page ids that must never be written (source UI page, guide page, seed page). Required"),
+    selfTestProtectNewPage: z.boolean().optional().describe("Guard self-test only: add the newly created page to protectedPageIds so the first write must abort. Leaves an empty page to delete"),
   },
-  async ({ planPath, resultPath, expectFileName, dryRun, protectedPageIds }: any) => {
+  async ({ planPath, resultPath, expectFileName, dryRun, protectedPageIds, selfTestProtectNewPage }: any) => {
     try {
       if (!Array.isArray(protectedPageIds) || !protectedPageIds.length) {
         return errorResult("Refused: ", "protectedPageIds is required (source UI page, guide page, seed page). Nothing written.");
@@ -3993,6 +3994,8 @@ server.tool(
       if (expectFileName && page.fileName !== expectFileName) {
         return errorResult("Wrong file: ", `open file is "${page.fileName}", expected "${expectFileName}". Nothing written.`);
       }
+      // 가드 자가 시험: 새 페이지를 보호 목록에 넣으면 플러그인이 첫 쓰기에서 멈춰야 한다(aborted)
+      if (selfTestProtectNewPage && !dryRun && page.pageId) protectedPageIds = [...protectedPageIds, page.pageId];
       const results: any[] = [];
       let aborted: any = null;   // 가드 위반·오류: 그 섹션에서 멈추고 지금까지 만든 것은 결과 파일에 남긴다
       let y = plan.layout.startY || 0;
