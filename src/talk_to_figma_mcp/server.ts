@@ -4010,8 +4010,11 @@ server.tool(
       await writeFile(resolve(resultPath), JSON.stringify(out, null, 1), "utf8");
       const missing = results.reduce((n, r) => n + (r.missing || []).length, 0);
       const failed = results.reduce((n, r) => n + (r.failed || []).length, 0);
+      // 배지 키 경로가 실패한 이유(메시지별 횟수). 섹션별 값은 resultPath 의 badgeErrors
+      const badgeKeyErrors: Record<string, number> = {};
+      for (const r of results) for (const e of r.badgeErrors || []) if (e) badgeKeyErrors[e] = (badgeKeyErrors[e] || 0) + 1;
       return jsonResult({ dryRun: !!dryRun, pageId: out.pageId, pageName: out.pageName, sections: results.length,
-        changed: results.reduce((n, r) => n + (r.changed || 0), 0), missing, failed, resultPath });
+        changed: results.reduce((n, r) => n + (r.changed || 0), 0), missing, failed, badgeKeyErrors, resultPath });
     } catch (error) {
       return errorResult("Error building review listing: ", error);
     }

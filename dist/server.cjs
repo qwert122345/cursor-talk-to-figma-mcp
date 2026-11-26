@@ -3263,6 +3263,8 @@ server.tool(
       await (0, import_promises.writeFile)((0, import_path.resolve)(resultPath), JSON.stringify(out, null, 1), "utf8");
       const missing = results.reduce((n, r) => n + (r.missing || []).length, 0);
       const failed = results.reduce((n, r) => n + (r.failed || []).length, 0);
+      const badgeKeyErrors = {};
+      for (const r of results) for (const e of r.badgeErrors || []) if (e) badgeKeyErrors[e] = (badgeKeyErrors[e] || 0) + 1;
       return jsonResult({
         dryRun: !!dryRun,
         pageId: out.pageId,
@@ -3271,6 +3273,7 @@ server.tool(
         changed: results.reduce((n, r) => n + (r.changed || 0), 0),
         missing,
         failed,
+        badgeKeyErrors,
         resultPath
       });
     } catch (error) {

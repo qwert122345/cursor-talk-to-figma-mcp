@@ -9669,10 +9669,14 @@ async function writeText(node, text) {
 }
 
 async function makeBadge(spec, section) {
-  var inst = null, how = null;
-  try {
+  // keyError: 키 경로가 실패한 단계와 피그마가 준 메시지. 결과 파일에 남겨 원인을 본다(성공하면 null)
+  var inst = null, how = null, keyError = null, step = "import";
+  if (!spec.key) keyError = "no key in config";
+  else try {
     var comp = await figma.importComponentByKeyAsync(spec.key);
+    step = "createInstance";
     inst = comp.createInstance();
+    step = "label";
     var t = inst.findOne(function (n) { return n.type === "TEXT"; });
     if (t && normText(t.characters) !== spec.label) {
       await figma.loadFontAsync(t.fontName);
@@ -9680,6 +9684,7 @@ async function makeBadge(spec, section) {
     }
     how = "key";
   } catch (e) {
+    keyError = step + ": " + errMsg(e);
     if (inst) { try { inst.remove(); } catch (e2) {} }
     inst = null;
   }
@@ -9690,9 +9695,9 @@ async function makeBadge(spec, section) {
     inst = seed.clone();
     how = "seed";
   }
-  if (!inst) throw new Error("Badge: neither key nor seed worked for " + spec.label);
+  if (!inst) throw new Error("Badge: neither key nor seed worked for " + spec.label + " (key — " + keyError + ")");
   section.appendChild(inst);
-  return { node: inst, how: how };
+  return { node: inst, how: how, keyError: keyError };
 }
 
 async function textNode(chars, style, color, width) {
@@ -9791,13 +9796,14 @@ async function reviewSection(params) {
     try { await writeText(t, want[key]); await addPinkFill(t, params.pink); changed++; }
     catch (e) { failed.push({ text: key, error: errMsg(e) }); }
   }
-  var badges = [];
+  var badges = [], badgeErrors = [];
   var pairs = [[params.badges.neutral, asIs], [params.badges.positive, toBe]];
   for (var b = 0; b < pairs.length; b++) {
     var r = await makeBadge(pairs[b][0], section);
     r.node.x = pairs[b][1].x + (pairs[b][1].width - r.node.width) / 2;
     r.node.y = L.badgeY;
     badges.push(r.how);
+    badgeErrors.push(r.keyError);
   }
   var tb = await buildTable(params.table, params.style.table);
   section.appendChild(tb);
@@ -9805,7 +9811,8 @@ async function reviewSection(params) {
   var right = tb.x + tb.width, bottom = Math.max(toBe.y + toBe.height, tb.y + tb.height);
   section.resizeWithoutConstraints(right + L.pad, bottom + L.pad);
   return { sectionId: section.id, name: section.name, width: section.width, height: section.height,
-           asIsId: asIs.id, toBeId: toBe.id, changed: changed, missing: missing, failed: failed, badges: badges };
+           asIsId: asIs.id, toBeId: toBe.id, changed: changed, missing: missing, failed: failed,
+           badges: badges, badgeErrors: badgeErrors };
 }
 
 async function inspectPaints(params) {
