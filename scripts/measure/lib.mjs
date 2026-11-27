@@ -1,7 +1,13 @@
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
-// 측정 결과(events.json 등)를 두는 폴더. 저장소 밖(기본: OS 임시 폴더)에 둔다 — 로그 원문이 들어 있다
-export const S=process.env.MEASURE_OUT||path.join(os.tmpdir(),'talk-to-figma-measure');
-fs.mkdirSync(S,{recursive:true});
+// 측정 결과(events.json 등)를 두는 폴더. 로그 원문이 들어 있으니 저장소 밖, 본인만 읽을 수 있게 둔다
+// 기본: ~/.cache/talk-to-figma-measure (공유 /tmp 의 예측 가능한 경로는 쓰지 않는다)
+process.umask(0o077); // 이후 만드는 파일은 0600, 폴더는 0700
+export const S=process.env.MEASURE_OUT||path.join(os.homedir(),'.cache','talk-to-figma-measure');
+fs.mkdirSync(S,{recursive:true,mode:0o700});
+{ const st=fs.lstatSync(S);
+  if(st.isSymbolicLink()||!st.isDirectory()) throw new Error('MEASURE_OUT must be a real directory, not a symlink: '+S);
+  if(typeof process.getuid==='function'&&st.uid!==process.getuid()) throw new Error('MEASURE_OUT is owned by another user: '+S);
+  fs.chmodSync(S,0o700); }
 export const load=()=>JSON.parse(fs.readFileSync(S+'/events.json','utf8'));
 export const isFig=n=>n.startsWith('mcp__TalkToFigma__');
 export const short=n=>n.replace('mcp__TalkToFigma__','');
