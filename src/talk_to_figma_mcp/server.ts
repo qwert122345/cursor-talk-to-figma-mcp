@@ -150,7 +150,7 @@ server.tool(
 );
 
 // Node Info Tool
-server.tool(
+const getNodeInfoTool = server.tool(
   "get_node_info",
   "Get detailed information about a specific node in Figma. To shrink a large tree, pass fields (keep only these, id always kept) and/or maxDepth (0 = the node itself; cut subtrees get childCount). Without them the result is unchanged.",
   {
@@ -279,7 +279,7 @@ function filterFigmaNode(node: any) {
 }
 
 // Nodes Info Tool
-server.tool(
+const getNodesInfoTool = server.tool(
   "get_nodes_info",
   "Get detailed information about multiple nodes in Figma. To shrink large trees, pass fields (keep only these, id always kept) and/or maxDepth (0 = each node itself; cut subtrees get childCount). Without them the result is unchanged.",
   {
@@ -1000,7 +1000,7 @@ server.tool(
 );
 
 // DS healthcheck: Hardcoded Value Tool
-server.tool(
+const getVariableBindingsTool = server.tool(
   "get_variable_bindings",
   "Find nodes using hardcoded values (fills, strokes, cornerRadius, itemSpacing, padding, fontSize) instead of variables. Returns the actual value per finding plus a byValue histogram (e.g. how many places paint #F5F5F5), alongside per-property and per-component/variant rollups and the node list. Colors are hex with opacity folded into alpha. Scope with nodeId or pageName; skip pages with excludePages.",
   {
@@ -1144,7 +1144,7 @@ server.tool(
 );
 
 // DS healthcheck: find every node carrying a given layer name
-server.tool(
+const findNodesByNameTool = server.tool(
   "find_nodes_by_name",
   "Find nodes by layer name across the file. find_hidden_nodes only reports nodes that are invisible and scan_nodes_by_types cannot filter by name, so this is the way to enumerate a standard layer (e.g. every \"Interaction\" frame). Narrow with types (node types) and parentTypes — parentTypes:[\"COMPONENT\"] keeps only main-component children and drops copies living inside instances, which cannot be edited anyway. idsOnly returns just the id array, unpaged, ready to hand to delete_multiple_nodes or set_selections. Scope with nodeId or pageName, skip pages with excludePages.",
   {
@@ -1185,7 +1185,7 @@ server.tool(
 );
 
 // DS healthcheck: "it exists but I cannot find it on canvas" scan
-server.tool(
+const findHiddenNodesTool = server.tool(
   "find_hidden_nodes",
   "Find nodes that exist in the file but are not visible on canvas, with the reason for each: hidden (visible=false), parentHidden (an ancestor is toggled off), transparent (opacity 0), faded (opacity below 1, only with includeFaded), zeroSize, clipped (fully outside a clipsContent ancestor) or clippedPartly. get_node_info does not return visible/opacity/clipsContent, so this is the only way to answer \"why can't I see it\". Scope with nodeId or pageName, skip pages with excludePages, and narrow with nameFilter (substring, case-insensitive).",
   {
@@ -1243,7 +1243,7 @@ server.tool(
 );
 
 // DS healthcheck: Instance Census Tool
-server.tool(
+const getInstanceCensusTool = server.tool(
   "get_instance_census",
   "Count instances per main component across the current file, split into library (design system) and local components. Run it on a product file to measure design system usage. Pass instancesFor (component key/id/name) to also get where those instances are - id, page and ancestor path - which is the only way to locate instances whose layer name is the slot name rather than the component name.",
   {
@@ -1279,6 +1279,13 @@ server.tool(
     }
   }
 );
+
+// 결과 줄이기 옵션을 받는 읽기 명령 6개는 모르는 키를 거부한다(옵션 이름 오타가 조용히 무시되어 전체 결과가 오지 않게).
+// SDK 는 받은 모양을 느슨한 z.object 로 감싸므로, 등록 객체의 inputSchema 만 strict 로 바꾼다. 다른 도구는 그대로.
+// 주의: RegisteredTool.update() 를 부르면 다시 느슨해진다(이 서버는 쓰지 않는다). SDK 를 올리면 다시 확인한다.
+for (const tool of [getNodeInfoTool, getNodesInfoTool, getVariableBindingsTool, findNodesByNameTool, findHiddenNodesTool, getInstanceCensusTool]) {
+  tool.inputSchema = (tool.inputSchema as any).strict();
+}
 
 // Get Annotations Tool
 server.tool(
