@@ -232,6 +232,7 @@ Claude Code ←(stdio)→ MCP 서버 ←(WebSocket)→ 중계 서버 ←(WebSock
 ALLOW_FORK_PUSH=1 git push origin main
 ```
 
+- 사용자가 요청하면 클로드 세션도 `ALLOW_FORK_PUSH=1` 을 붙여 `origin main` 에 푸시할 수 있다. 다른 브랜치와 `--no-verify` 는 쓰지 않는다.
 - `git push --no-verify` 도 훅을 건너뛴다. 클로드 세션에는 이 방법을 쓰지 말라고 규칙 파일에 적어 둔다(훅만으로는 막을 수 없다).
 - 규칙을 "main 만 푸시"로 바꾸려면, 훅에서 `ALLOW_FORK_PUSH` 확인 뒤에 푸시 대상이 `refs/heads/main` 이면 통과시키는 줄을 넣는다. 표준 입력 한 줄은 `<local ref> <local sha> <remote ref> <remote sha>` 꼴이다.
 
