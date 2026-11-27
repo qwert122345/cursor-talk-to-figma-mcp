@@ -55,4 +55,4 @@ console.log('\n=== 2) 첫 턴 ===  문맥 중앙값',fc[fc.length>>1],'최소',f
 const R=730.4e6; const net=split.gross-split.reload-split.handoff;
 console.log('경계',MINLEN,'자 이상 입력 → 구간',split.segs,'새 세션',split.newSegs);
 console.log('총감소',MM(split.gross),pc(split.gross,R),'| 재로드(도구 정의 등) −',MM(split.reload),'| 넘겨받기 −',MM(split.handoff),'| 순감소',MM(net),pc(net,R));
-console.log('시작 프리픽스(캐시 쓰기) 새 세션마다',K(split.startPrefixW/Math.max(1,split.newSegs)),'평균, 합',MM(split.startPrefixW),'— 1회 읽기로 치면',pc(net-split.startPrefixW,R),'· Opus 5.5 1시간 캐시 쓰기($8)=읽기($0.20)의 40배로 치면',pc(net-40*split.startPrefixW,R));
+console.log('시작 프리픽스(캐시 쓰기) 새 세션마다',K(split.startPrefixW/Math.max(1,split.newSegs)),'평균, 합',MM(split.startPrefixW),'— 1회 읽기로 치면',pc(net-split.startPrefixW,R),'· 캐시 쓰기를 읽기의 '+(P.writeX??38.5)+'배로 치면',pc(net-(P.writeX??38.5)*split.startPrefixW,R));
