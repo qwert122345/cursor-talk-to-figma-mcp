@@ -9165,7 +9165,8 @@ async function exportTextTree(params) {
     };
     for (var a = t.parent; a && a !== topParent; a = a.parent) {
       if (a.type === "FRAME" || a.type === "INSTANCE" || a.type === "COMPONENT")
-        o.frames.push([a.name, a.layoutSizingHorizontal || null, a.layoutSizingVertical || null]);
+        o.frames.push([a.name, a.layoutSizingHorizontal || null, a.layoutSizingVertical || null,
+                       r1(a.width), (a.paddingLeft || 0) + (a.paddingRight || 0)]);   // 폭·좌우 패딩 합 — 컨테이너 폭 계산용
     }
     if (pNode && pNode.absoluteBoundingBox && bb) {
       var pb = pNode.absoluteBoundingBox;
