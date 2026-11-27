@@ -3218,53 +3218,79 @@ server.tool(
 );
 server.tool(
   "build_review_listing",
-  "Build an as-is / to-be review page from a plan JSON (E-37). Writes only to a NEW page whose name starts with 'UX \uB77C\uC774\uD305 \uC218\uC815 \uAC74' (refuses an existing name or any other page). Source frames are only cloned. Per section: as-is and to-be clones, text edits on the to-be clone with an extra #FF00FF fill on each changed text, as-is/to-be badges (component key, else seed clone), and a 'same fix needed' table. The server lays sections out row by row (gapX within a row, gapY between rows) and writes per-section results to resultPath. dryRun checks sources and edits without writing.",
+  "Build an as-is / to-be review page from a plan JSON (E-37). Writes only to a NEW page whose name starts with 'UX \uB77C\uC774\uD305 \uC218\uC815 \uAC74' (refuses an existing name or any other page). Source frames are only cloned. Per section: as-is and to-be clones, text edits on the to-be clone with an extra #FF00FF fill on each changed text, as-is/to-be badges (component key, else seed clone; badges.useKey false skips the key and only clones the seed), and a 'same fix needed' table. protectedPageIds is required (the call is refused without it): before every write the plugin finds the page of the node it writes and stops at the first one on a protected page \u2014 sections built until then are kept in resultPath, the failing one as aborted. The server lays sections out row by row (gapX within a row, gapY between rows) and writes per-section results to resultPath. dryRun checks sources and edits without writing.",
   {
     planPath: import_zod.z.string().describe("Absolute path of the plan JSON (listing-plan.json)"),
     resultPath: import_zod.z.string().describe("Absolute path of the result JSON to write"),
     expectFileName: import_zod.z.string().optional().describe("Abort when the open file's name differs"),
-    dryRun: import_zod.z.boolean().optional().describe("Check only, write nothing (default false)")
+    dryRun: import_zod.z.boolean().optional().describe("Check only, write nothing (default false)"),
+    protectedPageIds: import_zod.z.array(import_zod.z.string()).min(1).describe("Page ids that must never be written (source UI page, guide page, seed page). Required"),
+    selfTestProtectNewPage: import_zod.z.boolean().optional().describe("Guard self-test only: add the newly created page to protectedPageIds so the first write must abort. Leaves an empty page to delete")
   },
-  async ({ planPath, resultPath, expectFileName, dryRun }) => {
+  async ({ planPath, resultPath, expectFileName, dryRun, protectedPageIds, selfTestProtectNewPage }) => {
     try {
+      if (!Array.isArray(protectedPageIds) || !protectedPageIds.length) {
+        return errorResult("Refused: ", "protectedPageIds is required (source UI page, guide page, seed page). Nothing written.");
+      }
       for (const p of [planPath, resultPath]) {
         if (!(0, import_path.isAbsolute)(p) || !p.endsWith(".json")) return errorResult("Bad path: ", `${p} \u2014 give an absolute path ending in .json`);
       }
       const plan = JSON.parse(await (0, import_promises.readFile)((0, import_path.resolve)(planPath), "utf8"));
-      const page = await sendCommandToFigma("review_page", { pageName: plan.pageName, dryRun: !!dryRun });
+      const page = await sendCommandToFigma("review_page", { pageName: plan.pageName, dryRun: !!dryRun, protectedPageIds });
       if (expectFileName && page.fileName !== expectFileName) {
         return errorResult("Wrong file: ", `open file is "${page.fileName}", expected "${expectFileName}". Nothing written.`);
       }
+      if (selfTestProtectNewPage && !dryRun && page.pageId) protectedPageIds = [...protectedPageIds, page.pageId];
       const results = [];
+      let aborted = null;
       let y = plan.layout.startY || 0;
       for (const row of plan.rows) {
         let x = plan.layout.startX || 0;
         let rowH = 0;
         for (const sec of row) {
-          const r = await sendCommandToFigma("review_section", {
-            ...sec,
-            pageId: page.pageId,
-            dryRun: !!dryRun,
-            x,
-            y,
-            layout: plan.layout,
-            style: plan.style,
-            badges: plan.badges,
-            pink: plan.pink
-          }, 6e4);
-          results.push({ ...r, x, y });
-          x += r.width + plan.layout.gapX;
-          rowH = Math.max(rowH, r.height);
+          try {
+            const r = await sendCommandToFigma("review_section", {
+              ...sec,
+              pageId: page.pageId,
+              dryRun: !!dryRun,
+              x,
+              y,
+              protectedPageIds,
+              layout: plan.layout,
+              style: plan.style,
+              badges: plan.badges,
+              pink: plan.pink
+            }, 6e4);
+            results.push({ ...r, x, y });
+            x += r.width + plan.layout.gapX;
+            rowH = Math.max(rowH, r.height);
+          } catch (e) {
+            aborted = { name: sec.name, asIs: sec.asIs, error: String(e && e.message ? e.message : e) };
+            results.push({ ...aborted, aborted: true, x, y });
+            break;
+          }
         }
+        if (aborted) break;
         y += rowH + plan.layout.gapY;
       }
-      const out = { dryRun: !!dryRun, fileName: page.fileName, pageId: page.pageId || null, pageName: plan.pageName, sections: results };
+      const out = {
+        dryRun: !!dryRun,
+        fileName: page.fileName,
+        pageId: page.pageId || null,
+        pageName: plan.pageName,
+        protectedPageIds,
+        aborted,
+        sections: results
+      };
       await (0, import_promises.mkdir)((0, import_path.dirname)((0, import_path.resolve)(resultPath)), { recursive: true });
       await (0, import_promises.writeFile)((0, import_path.resolve)(resultPath), JSON.stringify(out, null, 1), "utf8");
       const missing = results.reduce((n, r) => n + (r.missing || []).length, 0);
       const failed = results.reduce((n, r) => n + (r.failed || []).length, 0);
       const badgeKeyErrors = {};
       for (const r of results) for (const e of r.badgeErrors || []) if (e) badgeKeyErrors[e] = (badgeKeyErrors[e] || 0) + 1;
+      if (aborted) {
+        return errorResult("Aborted: ", `section "${aborted.name}" \u2014 ${aborted.error}. ${results.length - 1} section(s) built before it are in ${resultPath}.`);
+      }
       return jsonResult({
         dryRun: !!dryRun,
         pageId: out.pageId,
