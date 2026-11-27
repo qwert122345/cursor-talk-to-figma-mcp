@@ -8,6 +8,118 @@ import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
 import { readFile, writeFile, mkdir, access } from "fs/promises";
 import { dirname, isAbsolute, resolve } from "path";
+
+// src/talk_to_figma_mcp/readOptions.ts
+function isScalar(v) {
+  return v === null || typeof v !== "object";
+}
+function scalarsOf(obj) {
+  const out = {};
+  for (const k of Object.keys(obj)) if (isScalar(obj[k])) out[k] = obj[k];
+  return out;
+}
+var NODE_FIELDS = [
+  "name",
+  "type",
+  "fills",
+  "strokes",
+  "cornerRadius",
+  "absoluteBoundingBox",
+  "characters",
+  "style"
+];
+function projectNode(node, fields, maxDepth, depth = 0) {
+  if (node === null || typeof node !== "object") return node;
+  const keep = fields ? /* @__PURE__ */ new Set(["id", ...fields]) : null;
+  const out = {};
+  for (const k of Object.keys(node)) {
+    if (k === "children") continue;
+    if (!keep || keep.has(k)) out[k] = node[k];
+  }
+  if (Array.isArray(node.children)) {
+    if (maxDepth !== void 0 && depth >= maxDepth) {
+      out.childCount = node.children.length;
+    } else {
+      out.children = node.children.map((c) => projectNode(c, fields, maxDepth, depth + 1));
+    }
+  }
+  return out;
+}
+function projectItems(items, fields) {
+  if (!Array.isArray(items)) return items;
+  const keep = /* @__PURE__ */ new Set(["id", ...fields]);
+  return items.map((it) => {
+    if (it === null || typeof it !== "object") return it;
+    const out = {};
+    for (const k of Object.keys(it)) if (keep.has(k)) out[k] = it[k];
+    return out;
+  });
+}
+function withProjectedList(result, listKey, fields) {
+  if (result === null || typeof result !== "object" || !(listKey in result)) return result;
+  return { ...result, [listKey]: projectItems(result[listKey], fields) };
+}
+var HIDDEN_FIELDS = ["name", "type", "page", "path", "reasons", "detail"];
+function projectHidden(result, fields) {
+  return withProjectedList(result, "findings", fields);
+}
+function summarizeHidden(result) {
+  if (result === null || typeof result !== "object") return result;
+  const out = { summary: true, ...scalarsOf(result) };
+  if (result.byReason !== void 0) out.byReason = result.byReason;
+  return out;
+}
+var BYNAME_FIELDS = ["name", "type", "page", "path", "parentId", "parentType", "component", "variant"];
+function projectByName(result, fields) {
+  return withProjectedList(result, "findings", fields);
+}
+function summarizeByName(result) {
+  if (result === null || typeof result !== "object") return result;
+  const out = { summary: true, ...scalarsOf(result) };
+  if (result.byType !== void 0) out.byType = result.byType;
+  return out;
+}
+var CENSUS_FIELDS = [
+  "key",
+  "componentName",
+  "componentSetName",
+  "source",
+  "count",
+  "instances.name",
+  "instances.page",
+  "instances.path"
+];
+function projectCensus(result, fields) {
+  if (result === null || typeof result !== "object") return result;
+  const comp = fields.filter((f) => !f.startsWith("instances."));
+  const inst = fields.filter((f) => f.startsWith("instances.")).map((f) => f.slice("instances.".length));
+  const out = { ...result };
+  if ("components" in out) out.components = projectItems(out.components, comp);
+  if ("instances" in out) out.instances = projectItems(out.instances, inst);
+  return out;
+}
+var CENSUS_TOP = 20;
+function summarizeCensus(result) {
+  if (result === null || typeof result !== "object") return result;
+  const out = { summary: true, ...scalarsOf(result) };
+  if (Array.isArray(result.components)) {
+    out.topComponents = [...result.components].sort((a, b) => (b?.count ?? 0) - (a?.count ?? 0)).slice(0, CENSUS_TOP).map((c) => ({ componentName: c?.componentName, count: c?.count, source: c?.source }));
+  }
+  return out;
+}
+function summarizeBindings(result) {
+  if (result === null || typeof result !== "object") return result;
+  const out = { summary: true, ...scalarsOf(result) };
+  for (const k of ["byProperty", "byValue", "byTextStyle"]) if (result[k] !== void 0) out[k] = result[k];
+  if (result.byVariable && typeof result.byVariable === "object") {
+    const byVar = {};
+    for (const [name, v] of Object.entries(result.byVariable)) byVar[name] = v?.total;
+    out.byVariable = byVar;
+  }
+  return out;
+}
+
+// src/talk_to_figma_mcp/server.ts
 var logger = {
   info: (message) => process.stderr.write(`[INFO] ${message}
 `),
@@ -79,15 +191,20 @@ server.tool(
 );
 server.tool(
   "get_node_info",
-  "Get detailed information about a specific node in Figma",
+  "Get detailed information about a specific node in Figma. To shrink a large tree, pass fields (keep only these, id always kept) and/or maxDepth (0 = the node itself; cut subtrees get childCount). Without them the result is unchanged.",
   {
-    nodeId: z.string().describe("The ID of the node to get information about")
+    nodeId: z.string().describe("The ID of the node to get information about"),
+    fields: z.array(z.enum(NODE_FIELDS)).min(1).optional().describe("Keep only these fields on every node (id is always kept)"),
+    maxDepth: z.number().int().min(0).max(20).optional().describe("Stop at this depth: 0 = the node only, 1 = its children, ... Cut nodes get childCount")
   },
-  async ({ nodeId }) => {
+  async ({ nodeId, fields, maxDepth }) => {
     try {
       const result = await sendCommandToFigma("get_node_info", { nodeId });
       if (!result) {
         return jsonResult({ nodeId, type: "VECTOR", note: "VECTOR nodes are not dumped here; use get_vector_paths" });
+      }
+      if (fields !== void 0 || maxDepth !== void 0) {
+        return jsonResult(projectNode(filterFigmaNode(result), fields, maxDepth));
       }
       return jsonResult(filterFigmaNode(result));
     } catch (error) {
@@ -172,11 +289,13 @@ function filterFigmaNode(node) {
 }
 server.tool(
   "get_nodes_info",
-  "Get detailed information about multiple nodes in Figma",
+  "Get detailed information about multiple nodes in Figma. To shrink large trees, pass fields (keep only these, id always kept) and/or maxDepth (0 = each node itself; cut subtrees get childCount). Without them the result is unchanged.",
   {
-    nodeIds: z.array(z.string()).describe("Array of node IDs to get information about")
+    nodeIds: z.array(z.string()).describe("Array of node IDs to get information about"),
+    fields: z.array(z.enum(NODE_FIELDS)).min(1).optional().describe("Keep only these fields on every node (id is always kept)"),
+    maxDepth: z.number().int().min(0).max(20).optional().describe("Stop at this depth: 0 = each node only, 1 = its children, ... Cut nodes get childCount")
   },
-  async ({ nodeIds }) => {
+  async ({ nodeIds, fields, maxDepth }) => {
     try {
       const results = await Promise.all(
         nodeIds.map(async (nodeId) => {
@@ -184,6 +303,9 @@ server.tool(
           return { nodeId, info: result };
         })
       );
+      if (fields !== void 0 || maxDepth !== void 0) {
+        return jsonResult(results.map((result) => projectNode(filterFigmaNode(result.info), fields, maxDepth)));
+      }
       return {
         content: [
           {
@@ -779,15 +901,22 @@ server.tool(
     excludePages: z.array(z.string()).optional().describe("Page names to skip (e.g. the checklist page)"),
     detail: z.boolean().optional().describe("Return the node list, not just the counts (default true)"),
     limit: z.number().optional().describe("Max findings to return (default 500)"),
-    offset: z.number().optional().describe("Findings to skip, for paging through large results")
+    offset: z.number().optional().describe("Findings to skip, for paging through large results"),
+    summary: z.boolean().optional().describe("Counts only: totals, byProperty, byValue, byTextStyle and byVariable as {name: total}. No findings or per-variable component lists. Not with detail:true")
   },
-  async ({ nodeId, pageName, excludePages, detail, limit, offset }) => {
+  async ({ nodeId, pageName, excludePages, detail, limit, offset, summary }) => {
     try {
+      if (summary === true && detail === true) {
+        return errorResult("Refused: ", "summary cannot be combined with detail:true. Nothing was read.");
+      }
       const result = await sendCommandToFigma(
         "get_variable_bindings",
         { nodeId, pageName, excludePages, detail, limit, offset },
         12e4
       );
+      if (summary === true) {
+        return jsonResult(summarizeBindings(result));
+      }
       return jsonResult(result);
     } catch (error) {
       return errorResult(`Error getting variable bindings: `, error);
@@ -908,15 +1037,26 @@ server.tool(
     pageName: z.string().optional().describe("Limit the scan to a single page by name"),
     excludePages: z.array(z.string()).optional().describe("Page names to skip"),
     limit: z.number().optional().describe("Max findings to return (default 500)"),
-    offset: z.number().optional().describe("Findings to skip, for paging")
+    offset: z.number().optional().describe("Findings to skip, for paging"),
+    fields: z.array(z.enum(BYNAME_FIELDS)).min(1).optional().describe("Keep only these fields on each finding (id is always kept)"),
+    summary: z.boolean().optional().describe("Counts only (totals and byType), no findings. Not with fields or idsOnly")
   },
-  async ({ name, exact, types, parentTypes, idsOnly, nodeId, pageName, excludePages, limit, offset }) => {
+  async ({ name, exact, types, parentTypes, idsOnly, nodeId, pageName, excludePages, limit, offset, fields, summary }) => {
     try {
+      if (summary === true && (fields !== void 0 || idsOnly === true)) {
+        return errorResult("Refused: ", "summary cannot be combined with fields or idsOnly. Nothing was read.");
+      }
       const result = await sendCommandToFigma(
         "find_nodes_by_name",
         { name, exact, types, parentTypes, idsOnly, nodeId, pageName, excludePages, limit, offset },
         12e4
       );
+      if (summary === true) {
+        return jsonResult(summarizeByName(result));
+      }
+      if (fields !== void 0) {
+        return jsonResult(projectByName(result, fields));
+      }
       return jsonResult(result);
     } catch (error) {
       return errorResult(`Error finding nodes by name: `, error);
@@ -933,15 +1073,26 @@ server.tool(
     nameFilter: z.string().optional().describe('Only report nodes whose name contains this (case-insensitive), e.g. ".Slot"'),
     includeFaded: z.boolean().optional().describe('Also report nodes with opacity below 1 as reason "faded" (detail.opacity holds the value). Off by default because intentionally translucent nodes are common; turn it on to read opacity, which no other command returns.'),
     limit: z.number().optional().describe("Max findings to return (default 500)"),
-    offset: z.number().optional().describe("Findings to skip, for paging")
+    offset: z.number().optional().describe("Findings to skip, for paging"),
+    fields: z.array(z.enum(HIDDEN_FIELDS)).min(1).optional().describe("Keep only these fields on each finding (id is always kept)"),
+    summary: z.boolean().optional().describe("Counts only (totals and byReason), no findings. Not with fields")
   },
-  async ({ nodeId, pageName, excludePages, nameFilter, includeFaded, limit, offset }) => {
+  async ({ nodeId, pageName, excludePages, nameFilter, includeFaded, limit, offset, fields, summary }) => {
     try {
+      if (summary === true && fields !== void 0) {
+        return errorResult("Refused: ", "summary cannot be combined with fields. Nothing was read.");
+      }
       const result = await sendCommandToFigma(
         "find_hidden_nodes",
         { nodeId, pageName, excludePages, nameFilter, includeFaded, limit, offset },
         12e4
       );
+      if (summary === true) {
+        return jsonResult(summarizeHidden(result));
+      }
+      if (fields !== void 0) {
+        return jsonResult(projectHidden(result, fields));
+      }
       return jsonResult(result);
     } catch (error) {
       return errorResult(`Error finding hidden nodes: `, error);
@@ -973,15 +1124,26 @@ server.tool(
     pageName: z.string().optional().describe("Limit the census to a single page by name"),
     excludePages: z.array(z.string()).optional().describe("Page names to skip"),
     instancesFor: z.string().optional().describe("Component key, id, name or set name: also list where those instances actually are (id, page, ancestor path)"),
-    instanceLimit: z.number().optional().describe("Max instances to list for instancesFor (default 1000)")
+    instanceLimit: z.number().optional().describe("Max instances to list for instancesFor (default 1000)"),
+    fields: z.array(z.enum(CENSUS_FIELDS)).min(1).optional().describe("Keep only these fields: plain names for components[], 'instances.<name>' for instances[] (id is always kept)"),
+    summary: z.boolean().optional().describe("Totals plus the top 20 components by count (componentName, count, source). Not with fields")
   },
-  async ({ pageName, excludePages, instancesFor, instanceLimit }) => {
+  async ({ pageName, excludePages, instancesFor, instanceLimit, fields, summary }) => {
     try {
+      if (summary === true && fields !== void 0) {
+        return errorResult("Refused: ", "summary cannot be combined with fields. Nothing was read.");
+      }
       const result = await sendCommandToFigma(
         "get_instance_census",
         { pageName, excludePages, instancesFor, instanceLimit },
         12e4
       );
+      if (summary === true) {
+        return jsonResult(summarizeCensus(result));
+      }
+      if (fields !== void 0) {
+        return jsonResult(projectCensus(result, fields));
+      }
       return jsonResult(result);
     } catch (error) {
       return errorResult(`Error getting instance census: `, error);
