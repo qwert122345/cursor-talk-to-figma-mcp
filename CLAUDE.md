@@ -47,3 +47,20 @@ Bun WebSocket 서버(포트 3055, `PORT` 환경변수로 변경). 채널 단위�
 - **시간 제한**: 명령마다 기본 30초. 플러그인이 진행 상황을 보내면 연장된다. 100개가 넘는 작업은 나눠서 진행 상황을 보낸다
 - **검증**: 도구 파라미터는 Zod 스키마로 검증한다
 - **실패 보고**: 쓰기 도구는 한 항목이 실패해도 나머지를 계속하고, 결과에 `failed`·`skipped`·`errors` 로 남긴다. catch 안에서는 `error.message` 대신 `errMsg(error)` 를 쓴다(피그마는 Error 가 아닌 값을 던지기도 한다)
+
+## 피그마 읽기 명령 옵션
+
+큰 결과가 대화에 쌓이지 않게, 필요한 만큼만 받는다. 옵션을 안 주면 결과는 예전과 같다. 모르는 옵션 이름은 거부된다(strict).
+
+| 필요한 것 | 옵션 | 명령 |
+|---|---|---|
+| 개수·존재 여부만 | `summary: true` | find_hidden_nodes · find_nodes_by_name · get_instance_census · get_variable_bindings |
+| 구조 훑기 | `maxDepth: 1` 부터. 필요한 노드만 그 id 로 더 깊게 다시 부른다 (잘린 자리엔 `childCount`) | get_node_info · get_nodes_info |
+| 특정 속성만 | `fields: [...]` (`id` 는 늘 남는다) | get_node_info · get_nodes_info · find_hidden_nodes · find_nodes_by_name · get_instance_census |
+
+- `summary` 는 `fields` 와 같이 쓸 수 없다. find_nodes_by_name 은 `idsOnly`, get_variable_bindings 는 `detail: true` 와도 같이 쓸 수 없다.
+- 노드의 크기·위치는 `absoluteBoundingBox`, 글꼴은 `style` 에 들어 있다.
+- **옵션을 쓰지 않는 곳**
+  - 봇 명령 `export_text_tree` · `build_review_listing` · `inspect_paints` (옵션이 없다)
+  - 봇의 `get_nodes_info` 시드 확인 호출(`/ux-check listing`). 봇이 쓰는 그대로 둔다.
+- 설계와 측정: `review/read-fields-design.md`. 바이트 비교 시험: `scripts/read-options/`

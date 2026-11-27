@@ -223,6 +223,18 @@ Claude Code ←(stdio)→ MCP 서버 ←(WebSocket)→ 중계 서버 ←(WebSock
 - MCP 서버: `src/talk_to_figma_mcp/server.ts` 수정 → `bun run build`(감시 모드는 `bun run dev`) → Claude Code `/mcp` 재연결
 - `dist/` 는 `.gitignore` 에 있지만 추적 중이라, 커밋할 땐 `git add -f dist`
 
+### 푸시 막기 (로컬 `pre-push` 훅)
+
+이 포크는 클로드 세션이 저절로 푸시하지 않게 `.git/hooks/pre-push` 가 **모든 푸시를 거부**한다. 훅은 저장소에 커밋되지 않으니, 새로 받은 사본에는 다시 만들어 넣는다.
+
+```sh
+# 사람이 직접 푸시할 때만(우회)
+ALLOW_FORK_PUSH=1 git push origin main
+```
+
+- `git push --no-verify` 도 훅을 건너뛴다. 클로드 세션에는 이 방법을 쓰지 말라고 규칙 파일에 적어 둔다(훅만으로는 막을 수 없다).
+- 규칙을 "main 만 푸시"로 바꾸려면, 훅에서 `ALLOW_FORK_PUSH` 확인 뒤에 푸시 대상이 `refs/heads/main` 이면 통과시키는 줄을 넣는다. 표준 입력 한 줄은 `<local ref> <local sha> <remote ref> <remote sha>` 꼴이다.
+
 ## 작업 요령
 
 1. 명령 전에 항상 `join_channel` 로 채널에 접속한다
