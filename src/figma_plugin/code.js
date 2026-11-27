@@ -9135,6 +9135,43 @@ async function exportTextTree(params) {
     return twin ? twin.characters !== t.characters : null;
   }
 
+  // 글자 수·넘침 분석용(읽기만): 크기·폰트 크기·자동 크기·말줄임·줄 수 제한, 가장 가까운 부모 프레임 폭과 넘친 px
+  function r1(v) { return Math.round(v * 10) / 10; }
+  function fontSizes(t) {
+    if (t.fontSize !== figma.mixed) return [t.fontSize];
+    var out = [];
+    try {
+      t.getStyledTextSegments(["fontSize"]).forEach(function (s) { if (out.indexOf(s.fontSize) < 0) out.push(s.fontSize); });
+    } catch (e) { /* ignore */ }
+    return out.sort(function (a, b) { return a - b; });
+  }
+  function layoutOf(t, pNode) {
+    var bb = t.absoluteBoundingBox, rb = t.absoluteRenderBounds;
+    var lh = t.lineHeight === figma.mixed ? null : t.lineHeight;
+    var o = {
+      w: r1(t.width), h: r1(t.height),
+      renderW: rb ? r1(rb.width) : null, renderH: rb ? r1(rb.height) : null,
+      fontSize: fontSizes(t),
+      lineHeight: lh ? (lh.unit === "AUTO" ? "AUTO" : lh.value + (lh.unit === "PIXELS" ? "px" : "%")) : null,
+      textAutoResize: t.textAutoResize,
+      textTruncation: t.textTruncation || "DISABLED",
+      maxLines: t.maxLines == null ? null : t.maxLines,
+      sizingH: t.layoutSizingHorizontal || null,
+      parent: null,
+      overflowX: null,
+    };
+    if (pNode && pNode.absoluteBoundingBox && bb) {
+      var pb = pNode.absoluteBoundingBox;
+      o.parent = { name: pNode.name, type: pNode.type, w: r1(pb.width), h: r1(pb.height),
+                   clips: pNode.clipsContent === true, layoutMode: pNode.layoutMode || null,
+                   paddingL: pNode.paddingLeft || 0, paddingR: pNode.paddingRight || 0 };
+      // 부모 프레임 밖으로 나간 가로 px(글자 박스와 렌더 범위 중 더 바깥)
+      var left = Math.min(bb.x, rb ? rb.x : bb.x), right = Math.max(bb.x + bb.width, rb ? rb.x + rb.width : 0);
+      o.overflowX = r1(Math.max(0, right - (pb.x + pb.width), pb.x - left));
+    }
+    return o;
+  }
+
   var texts = [];
   for (var i = 0; i < slice.length; i++) {
     var top = slice[i].node;
@@ -9143,14 +9180,14 @@ async function exportTextTree(params) {
       var t = found[j];
       var visible = true;
       var instances = [];
-      var parentFrame = null;
+      var parentFrame = null, parentNode = null;
       var path = [];
       var n = t;
       while (n && n !== top.parent) {
         if (n.visible === false) visible = false;
         if (n !== t) path.unshift(n.name);
         if (n !== t && n.type === "INSTANCE") instances.unshift(n);
-        if (n !== t && !parentFrame && (n.type === "FRAME" || n.type === "INSTANCE" || n.type === "COMPONENT" || n.type === "GROUP")) parentFrame = n.name;
+        if (n !== t && !parentFrame && (n.type === "FRAME" || n.type === "INSTANCE" || n.type === "COMPONENT" || n.type === "GROUP")) { parentFrame = n.name; parentNode = n; }
         n = n.parent;
       }
       if (!visible && !includeHidden) continue;
@@ -9173,6 +9210,7 @@ async function exportTextTree(params) {
         // 화면에 놓인(가장 바깥) 인스턴스에서 이 글자를 덮어썼나 — false 면 메인 컴포넌트 기본 글자
         textOverride: instances.length ? await overridesText(instances[0], t) : null,
         topFrame: { id: top.id, name: top.name, section: slice[i].section, sectionId: slice[i].sectionId || null, x: Math.round(top.absoluteTransform[0][2]) },
+        layout: layoutOf(t, parentNode),
       });
     }
   }
@@ -9760,6 +9798,9 @@ async function buildTable(spec, st) {
       c.primaryAxisSizingMode = "FIXED"; c.counterAxisSizingMode = "AUTO";
       c.paddingTop = c.paddingBottom = c.paddingLeft = c.paddingRight = 12;
       c.resize(st.columns[i], 45);
+      // resize() 는 auto layout 의 두 축을 FIXED 로 바꾼다 → 세로(교차축)를 hug 로 되돌린다.
+      // 한 줄이면 12 + 21 + 12 = 45 로 전과 같고, 줄바꿈되면 셀·행(Container-Contents)이 같이 커진다.
+      c.counterAxisSizingMode = "AUTO";
       var t = await textNode(cells[i] || " ", header ? "Bold" : "Medium", header ? st.headerColor : st.bodyColor);
       t.fontSize = 14; t.lineHeight = { value: 21, unit: "PIXELS" };
       c.appendChild(t);
