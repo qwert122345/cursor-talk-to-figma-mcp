@@ -38,6 +38,8 @@ Bun WebSocket 서버(포트 3055, `PORT` 환경변수로 변경). 채널 단위�
 
 - **반영 순서**: `code.js` 수정 → 피그마에서 플러그인 재실행(채널 ID 가 바뀜). `server.ts` 수정 → `bun run build` → Claude Code `/mcp` 재연결 → 새 채널로 `join_channel`
 - **`dist/`**: `.gitignore` 에 있지만 추적 중이다. 커밋할 땐 `git add -f dist`
+  - `src/talk_to_figma_mcp/` 를 바꾼 커밋에는 **같은 커밋에** `bun run build` 한 dist 를 넣는다(커밋된 dist 가 소스보다 뒤처지지 않게)
+  - 합치기·리베이스에서 dist 가 충돌하면 **손으로 고치지 않는다.** 합친 소스로 `bun run build` 를 다시 돌려 그 결과를 넣는다
 - **`.mcp.json`**: 사람마다 경로가 다르니 커밋하지 않는다
 - **dynamic-page**: 다른 페이지 노드는 `getNodeByIdAsync`, 전 페이지 순회는 `loadAllPagesAsync` 가 필요하다(무거우니 꼭 필요할 때만)
 - **색**: 피그마는 RGBA 0–1. 도구도 0–1 을 받고 표시할 땐 HEX 로 바꾼다
