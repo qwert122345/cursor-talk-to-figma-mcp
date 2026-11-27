@@ -9145,7 +9145,7 @@ async function exportTextTree(params) {
     } catch (e) { /* ignore */ }
     return out.sort(function (a, b) { return a - b; });
   }
-  function layoutOf(t, pNode) {
+  function layoutOf(t, pNode, topParent) {
     var bb = t.absoluteBoundingBox, rb = t.absoluteRenderBounds;
     var lh = t.lineHeight === figma.mixed ? null : t.lineHeight;
     var o = {
@@ -9159,7 +9159,14 @@ async function exportTextTree(params) {
       sizingH: t.layoutSizingHorizontal || null,
       parent: null,
       overflowX: null,
+      // 크기 설정(HUG/FILL/FIXED): 글자 자신과, 글자에서 화면(가장 바깥)까지의 프레임들 [이름, 가로, 세로] — 리뷰 페이지 비교용
+      sizing: [t.layoutSizingHorizontal || null, t.layoutSizingVertical || null],
+      frames: [],
     };
+    for (var a = t.parent; a && a !== topParent; a = a.parent) {
+      if (a.type === "FRAME" || a.type === "INSTANCE" || a.type === "COMPONENT")
+        o.frames.push([a.name, a.layoutSizingHorizontal || null, a.layoutSizingVertical || null]);
+    }
     if (pNode && pNode.absoluteBoundingBox && bb) {
       var pb = pNode.absoluteBoundingBox;
       o.parent = { name: pNode.name, type: pNode.type, w: r1(pb.width), h: r1(pb.height),
@@ -9210,7 +9217,7 @@ async function exportTextTree(params) {
         // 화면에 놓인(가장 바깥) 인스턴스에서 이 글자를 덮어썼나 — false 면 메인 컴포넌트 기본 글자
         textOverride: instances.length ? await overridesText(instances[0], t) : null,
         topFrame: { id: top.id, name: top.name, section: slice[i].section, sectionId: slice[i].sectionId || null, x: Math.round(top.absoluteTransform[0][2]) },
-        layout: layoutOf(t, parentNode),
+        layout: layoutOf(t, parentNode, top.parent),
       });
     }
   }
